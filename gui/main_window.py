@@ -355,6 +355,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def do_mp3_to_srt(self):
@@ -390,6 +391,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def _ask_lead_time(self):
@@ -408,8 +410,8 @@ class MainWindow:
         result = [0.0]  # 默认值
         cancelled = [False]
         
-        ttk.Label(dialog, text="音频前面有过场/静音的时间（秒）：").pack(pady=10)
-        ttk.Label(dialog, text="（如果没有过场，保持为0即可）").pack()
+        ttk.Label(dialog, text="字幕时间轴手动偏移（秒）：").pack(pady=10)
+        ttk.Label(dialog, text="（通常保持0；正数会让字幕整体延后）").pack()
         
         time_var = tk.StringVar(value="0")
         entry = ttk.Entry(dialog, textvariable=time_var, width=15)
@@ -522,6 +524,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def do_srt_to_mp3(self):
@@ -547,6 +550,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def do_merge_av(self):
@@ -581,6 +585,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def do_burn_sub(self):
@@ -616,6 +621,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
         
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
     
     def do_proofread(self):
@@ -639,6 +645,9 @@ class MainWindow:
         )
         if not txt_file:
             return
+
+        translator_engine.set_translation_model(self.selected_translation_model.get())
+        self.add_log(f"字幕校对模型: {self.selected_translation_model.get()}")
         
         def run_task():
             try:
@@ -648,9 +657,12 @@ class MainWindow:
                     progress_callback=self.update_progress,
                     log_callback=self.add_log
                 )
+            except Exception as e:
+                self.add_log(f"✗ 字幕与逐字稿校对失败: {str(e)}")
             finally:
                 self._reset_progress_safe()
 
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
 
     def do_terminology_proofread(self):
@@ -689,6 +701,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
 
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
 
     def _ask_terminology_options(self):
@@ -802,6 +815,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
 
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
 
     def do_transcript_translate(self):
@@ -841,6 +855,7 @@ class MainWindow:
             finally:
                 self._reset_progress_safe()
 
+        self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
 
     def open_cache_dir(self):
@@ -858,6 +873,7 @@ class MainWindow:
         from .settings_window import ModelSettingsWindow
         settings_window = ModelSettingsWindow(self.root)
         self.root.wait_window(settings_window.window)
+        self._load_model_settings()
         self._refresh_model_selector()
     
     def show_about(self):

@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 from typing import List, Dict, Optional, Tuple
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 try:
     from deep_translator import GoogleTranslator, LibreTranslator
@@ -125,7 +126,7 @@ Good: "Need further discussion."
 Chinese: "现在让我们来学习电气制图认证课程。"
 Good: "Learn electrical drafting."
 
-OUTPUT: ONLY the English translation. No explanations, no notes."""
+OUTPUT: ONLY the final English subtitle text. No explanations, no notes, no reasoning, no <think> tags."""
 
     user_prompt = f"""Translate Chinese to English.
 CRITICAL: ≤ {max_chars} characters!
@@ -156,28 +157,49 @@ English:"""
 
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode('utf-8'))
-            translated = result['choices'][0]['message']['content'].strip()
+            translated = strip_reasoning_artifacts(result['choices'][0]['message']['content'])
 
-            # 清理可能的前缀
-            translated = re.sub(r'^(English:)\s*', '', translated, flags=re.IGNORECASE)
-            # 清理引号
-            translated = re.sub(r'^["""''「」『』【】]+', '', translated)
-            translated = re.sub(r'["""''「」『』【】]+$', '', translated)
-            translated = translated.strip()
+            if looks_like_reasoning(translated):
+                retry_payload = {
+                    "model": minimax_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt + "\n\nCRITICAL: Output ONLY the final translated subtitle text. Do NOT include reasoning, analysis, explanations, labels, or <think> tags."},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 200
+                }
+
+                req2 = urllib.request.Request(
+                    f"{MINIMAX_BASE_URL}/chat/completions",
+                    data=json.dumps(retry_payload).encode('utf-8'),
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {MINIMAX_API_KEY}'
+                    },
+                    method='POST'
+                )
+
+                with urllib.request.urlopen(req2, timeout=30) as response2:
+                    result2 = json.loads(response2.read().decode('utf-8'))
+                    translated = strip_reasoning_artifacts(result2['choices'][0]['message']['content'])
+
+            if looks_like_reasoning(translated):
+                raise Exception("AI返回了推理内容，未得到有效翻译")
 
             if log_callback:
-                log_callback(f"  MiniMax: {text[:15]}... -> {translated[:25]}...")
+                log_callback(f"  {model_key}: {text[:15]}... -> {translated[:25]}...")
 
             return translated
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else ''
         if log_callback:
-            log_callback(f"  MiniMax HTTP {e.code}: {error_body[:200]}")
-        raise Exception(f"MiniMax HTTP {e.code}: {error_body[:200]}")
+            log_callback(f"  {model_key} HTTP {e.code}: {error_body[:200]}")
+        raise Exception(f"{model_key} HTTP {e.code}: {error_body[:200]}")
     except Exception as e:
         if log_callback:
-            log_callback(f"  MiniMax error: {str(e)}")
+            log_callback(f"  {model_key} error: {str(e)}")
         raise
 
 
@@ -188,12 +210,161 @@ def contains_chinese(text: str) -> bool:
             return True
     return False
 
+
+REASONING_PATTERNS = [
+    r'(?i)<\s*think\s*>',
+    r'(?i)</\s*think\s*>',
+    r'(?i)^let\s+me\s+translate\b',
+    r'(?i)^the\s+user\s+wants\s+me\b',
+    r'(?i)^i\s+need\s+to\s+translate\b',
+    r'(?i)^to\s+translate\s+a\s+chinese\s+subtitle\b',
+    r'(?i)^this\s+is\s+(a\s+)?(?:very\s+)?short\s+chinese\s+subtitle\b',
+    r'(?i)^this\s+is\s+a\s+short\s+chinese\s+subtitle\s+that\s+needs\b',
+    r'(?i)^this\s+is\s+(a\s+)?technical\b',
+    r'(?i)^original\s*:',
+    r'(?i)^chinese\s*:',
+    r'(?i)^english\s*:',
+    r'(?i)^shortening\b',
+    r'(?i)^let\s+me\b',
+    r'(?i)^this\s+is\s+already\b',
+    r'(?i)^or\s+even\s+shorter\b',
+    r'(?i)^count\s*:',
+    r'(?i)^that\'?s\s+\d+\s+characters\b',
+    r'(?i)^this\s+works\b',
+    r'(?i)^actually\b',
+    r'(?i)^alternative\s*:',
+    r'(?i)^character\b',
+    r'(?i)^this\s+seems\b',
+    r'(?i)^this\s+is\s+basically\b',
+    r'(?i)^\d+\.\s*(extract|shorten|colloquial|simplify|omit|keep)\b',
+]
+
+
+def _is_reasoning_line(line: str) -> bool:
+    """判断一行是否像模型的思考/提示词残留。"""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return any(re.search(pattern, stripped) for pattern in REASONING_PATTERNS)
+
+
+def strip_reasoning_artifacts(text: str) -> str:
+    """清理模型推理痕迹，只保留最终翻译文本。"""
+    if not text:
+        return text
+
+    cleaned = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+
+    # 如果模型把最终答案放在标签后面，优先提取最后一个明确答案。
+    answer_patterns = [
+        r'(?is)(?:final\s+answer|final|english\s+translation|translation|english)\s*[:：]\s*(.+)$',
+    ]
+    for pattern in answer_patterns:
+        match = re.search(pattern, cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+            break
+
+    # 先移除成对 think 标签内容
+    cleaned = re.sub(r'(?is)<\s*think\s*>.*?<\s*/\s*think\s*>', ' ', cleaned)
+    # 有些推理模型会返回未闭合的 <think>，这种内容不能进入字幕
+    cleaned = re.sub(r'(?is)<\s*think\s*>.*$', ' ', cleaned)
+    # 再去掉孤立标签本身
+    cleaned = re.sub(r'(?is)<\s*/?\s*think\s*>', ' ', cleaned)
+
+    lines = []
+    for raw_line in cleaned.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _is_reasoning_line(line):
+            continue
+        lines.append(line)
+
+    cleaned = ' '.join(lines).strip()
+    cleaned = re.sub(r'^(English:)\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'^["""''「」『』【】]+', '', cleaned)
+    trailing_reasoning_pattern = (
+        r"\s*[\"'“”]?\s*(?:[-–—]\s*)?(?:Shortening\b|This\s+is\s+already\b|Let\s+me\b|"
+        r"Or\s+even\s+shorter\b|Count\s*:|That'?s\s+\d+\s+characters\b|"
+        r"This\s+is\s+\d+\s+characters\b|This\s+works\b|This\s+is\s+clean\b|"
+        r"This\s+is\s+concise\b|well\s+under\s+\d+\b|under\s+\d+\b|"
+        r"\d+\s+characters\b|characters\s*[✓-]|"
+        r"Actually\b|Alternative\s*:|Character\b|This\s+seems\b|"
+        r"This\s+is\s+basically\b|sounds\s+a\b|"
+        r"I\s+(?:need|should|will)\b|The\s+user\s+wants\s+me\b|"
+        r"This\s+(?:sentence|subtitle|translation)\b).*$"
+    )
+    cleaned = re.sub(trailing_reasoning_pattern, '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r'\s*["\'“”]?\s*[-–—]\s*This\s+is\s+\d+.*$', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # 模型常把候选翻译接在第二个引号后面，只保留第一个候选前的正文。
+    cleaned = re.sub(r'(?s)^(.+?)["”]\s+["“].*$', r'\1', cleaned)
+    cleaned = re.sub(r'(?s)^(.+?)["”]\s*(?:[-–—]\s*)?["“].*$', r'\1', cleaned)
+    cleaned = re.sub(r'(?is)\s+(?:Alternative\s*:|Actually\b|This\s+seems\b|This\s+is\s+basically\b|Character\b|That\'?s\s+shorter\b).*$',
+                     '', cleaned)
+    cleaned = re.sub(r'(?is)["”]\s*(?:[-–—]\s*)?(?:It\'?s|That\'?s|This\s+is|Change|Click|Press|Hold|Tap|Select|Use)\b.*$',
+                     '', cleaned)
+    # 如果模型给了多个候选翻译，只保留第一个候选。
+    cleaned = re.sub(r'\s+(?:or|OR)\s+["“].*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'^\s*[-–—]\s*["“](.*?)["”]\s*[-–—].*$', r'\1', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'["""''「」『』【】]+$', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def has_chinese_residue(text: str) -> bool:
+    """判断英文翻译中是否有明显中文残留。"""
+    if not text:
+        return False
+    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+    if not chinese_chars:
+        return False
+    # 单个中文符号/专名残留不直接判死，多个中文字符才认为翻译失败。
+    return len(chinese_chars) >= 2
+
+
+def looks_like_reasoning(text: str) -> bool:
+    """判断模型输出是否仍然像思考过程，而不是翻译结果。"""
+    if not text or not text.strip():
+        return True
+
+    stripped = text.strip()
+    if any(re.search(pattern, stripped) for pattern in REASONING_PATTERNS):
+        return True
+
+    alpha_count = len(re.findall(r'[A-Za-z]', stripped))
+    word_count = len(re.findall(r'\b[A-Za-z]+\b', stripped))
+    if alpha_count == 0:
+        return True
+
+    if re.search(r'(?i)\b(the\s+user\s+wants\s+me|let\s+me(?:\s+\w+)?|i\s+need\s+to\s+translate|shortening|well\s+under\s+\d+|or\s+even\s+shorter|characters\s*[✓-]|count\s*:)\b', stripped):
+        return True
+
+    return word_count >= 5 and stripped.endswith(':')
+
 def clean_text_for_translation(text: str) -> str:
     """清理文本，准备翻译"""
     # 移除多余空格和换行
     text = text.strip()
     text = re.sub(r'\s+', ' ', text)
     return text
+
+
+def translate_with_google_timeout(text: str, timeout: int = 10) -> str:
+    """使用Google翻译，避免备用翻译长时间卡住。"""
+    def _translate():
+        google_translator = GoogleTranslator(source='zh-CN', target='en')
+        return google_translator.translate(text)
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_translate)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError:
+        future.cancel()
+        raise TimeoutError(f"Google翻译超过{timeout}秒未响应")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 def make_translation_prompt(text: str, target_lang: str = "en") -> str:
     """
@@ -791,7 +962,7 @@ class TranslatorEngine:
                     )
                 except Exception as llm_err:
                     if log_callback:
-                        log_callback(f"  MiniMax LLM失败，回退到Google翻译: {str(llm_err)}")
+                        log_callback(f"  {get_translation_model()} 失败，回退到Google翻译: {str(llm_err)}")
                     # 回退到 Google 翻译，但做裁剪
                     translated_text = self._translate_text_with_retry(
                         translator, original_text, log_callback, translator_type
@@ -936,6 +1107,8 @@ class TranslatorEngine:
         if not translated_text:
             return translated_text
         
+        translated_text = strip_reasoning_artifacts(translated_text)
+
         # 去除所有提示词相关的文本
         prompt_patterns = [
             r'(?i)translate\s+to\s+english[^:]*:',
@@ -1365,7 +1538,7 @@ def translate_srt_strict_netflix(srt_path: str, target_lang: str = "en",
         cn_duration = cn_end - cn_start
         max_chars = max(20, int(cn_duration * 15))  # 至少20字符，最多按比例
 
-        # 使用MiniMax LLM严格约束翻译
+        # 使用当前设置的大模型严格约束翻译；失败时先自动重试，再回退备用翻译
         try:
             en_text = translate_with_minimax_strict(
                 cn_text,
@@ -1374,17 +1547,17 @@ def translate_srt_strict_netflix(srt_path: str, target_lang: str = "en",
             )
         except Exception as e:
             if log_callback:
-                log_callback(f"  MiniMax失败，回退: {str(e)[:50]}")
-            # 回退到Google翻译
+                log_callback(f"  {get_translation_model()} 失败，改用Google翻译: {str(e)[:80]}")
             try:
-                translator, translator_type = translator_engine._select_best_translator(target_lang, log_callback)
-                en_text = translator_engine._translate_text_with_retry(
-                    translator, cn_text, log_callback, translator_type
-                )
-                # Google翻译后裁剪到最大长度
+                en_text = translate_with_google_timeout(cn_text, timeout=10)
+                en_text = strip_reasoning_artifacts(en_text)
                 en_text = truncate_to_max_chars(en_text, max_chars)
-            except:
-                en_text = f"[Translation Failed] {cn_text}"
+                if log_callback:
+                    log_callback(f"    Google翻译成功: {en_text[:30]}...")
+            except Exception as fallback_error:
+                if log_callback:
+                    log_callback(f"    Google翻译也失败，保留原中文并继续下一段: {str(fallback_error)[:80]}")
+                en_text = cn_text
 
         # 处理英文内部换行（≤42字符/行，最多2行）
         en_text_formatted = format_english_subtitle(en_text)
@@ -1447,6 +1620,8 @@ FORBIDDEN:
 - Unnecessary adjectives or adverbs
 - First person pronouns unless essential (I, we usually can be omitted)
 - Sentence starters like "Regarding this", "Concerning that", "As for"
+- Alternative translations, character counts, comments, checks, or analysis
+- Quotation marks around the answer
 
 MAXIMUM: ≤ {max_chars} characters per line
 
@@ -1469,11 +1644,11 @@ Good: "Part of power system diagram."
 Chinese: "这些符号是由国家标准进行标准化的。"
 Good: "Standardized by national standard."
 
-OUTPUT: ONLY the English translation. No explanations, no notes.
+OUTPUT: ONLY one final English subtitle line. No explanations, no notes, no alternatives, no character counts, no reasoning, no <think> tags.
 """
 
     user_prompt = f"""Translate this Chinese subtitle to English.
-CRITICAL: Must be ≤ {max_chars} characters!
+CRITICAL: Must be ≤ {max_chars} characters. Return only the final subtitle text. Do not add alternatives, comments, quotes, or character counts.
 
 Chinese: {text}
 English:"""
@@ -1519,34 +1694,29 @@ English:"""
 
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode('utf-8'))
-            translated = result['choices'][0]['message']['content'].strip()
-
-            # 清理可能的前缀
-            translated = re.sub(r'^(English:)\s*', '', translated, flags=re.IGNORECASE)
-
-            # 清理引号和各种括号
-            translated = re.sub(r'^["""''「」『』【】]+', '', translated)  # 开头的引号括号
-            translated = re.sub(r'["""''「」『』【】]+$', '', translated) # 结尾的引号括号
-            translated = re.sub(r'^["""''「」『』【】]+', '', translated) # 任意位置的引号括号
-            translated = translated.strip()
+            translated = strip_reasoning_artifacts(result['choices'][0]['message']['content'])
 
             # 确保不超过最大字符限制
             translated = truncate_to_max_chars(translated, max_chars)
 
-            # 如果翻译结果中包含中文字符，循环重试直到没有中文
+            # 如果翻译结果中包含中文字符，或仍像推理内容，则继续让同一模型重译这一条
             retry_count = 0
-            while contains_chinese(translated) and retry_count < 5:
+            max_ai_retries = 8
+            while (has_chinese_residue(translated) or looks_like_reasoning(translated)) and retry_count < max_ai_retries:
                 retry_count += 1
                 if log_callback:
-                    log_callback(f"    检测到中文，重试第{retry_count}次...")
+                    if has_chinese_residue(translated):
+                        log_callback(f"    检测到中文残留，重新翻译第{retry_count}/{max_ai_retries}次...")
+                    else:
+                        log_callback(f"    检测到推理内容，重新翻译第{retry_count}/{max_ai_retries}次...")
 
                 retry_payload = {
                     "model": minimax_model,
                     "messages": [
-                        {"role": "system", "content": system_prompt + "\n\nCRITICAL: The previous translation contained Chinese characters. Output ONLY pure English. Do NOT mix any Chinese characters."},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "system", "content": system_prompt + "\n\nCRITICAL FAILURE RECOVERY: The previous output was invalid because it included reasoning or Chinese residue. Translate again from scratch. Return ONLY one short English subtitle. No labels. No quotes. No reasoning. No <think>. No Chinese."},
+                        {"role": "user", "content": f"Chinese subtitle:\n{text}\n\nReturn only the English subtitle:"}
                     ],
-                    "temperature": 0.3,
+                    "temperature": 0.1,
                     "max_tokens": 200
                 }
 
@@ -1562,27 +1732,27 @@ English:"""
 
                 with urllib.request.urlopen(req2, timeout=30) as response2:
                     result2 = json.loads(response2.read().decode('utf-8'))
-                    translated = result2['choices'][0]['message']['content'].strip()
-                    translated = re.sub(r'^(English:)\s*', '', translated, flags=re.IGNORECASE)
-                    translated = re.sub(r'^["""''「」『』【】]+', '', translated)
-                    translated = re.sub(r'["""''「」『』【】]+$', '', translated)
+                    translated = strip_reasoning_artifacts(result2['choices'][0]['message']['content'])
                     translated = truncate_to_max_chars(translated, max_chars)
+
+            if has_chinese_residue(translated) or looks_like_reasoning(translated):
+                raise Exception(f"AI连续{max_ai_retries + 1}次返回推理内容或中文残留，未得到有效英文翻译")
 
             if log_callback:
                 if retry_count > 0:
                     log_callback(f"    最终: {translated[:30]}...")
-                log_callback(f"    MiniMax: {text[:20]}... -> {translated[:30]}...")
+                log_callback(f"    {model_key}: {text[:20]}... -> {translated[:30]}...")
 
             return translated
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else ''
         if log_callback:
-            log_callback(f"    MiniMax HTTP {e.code}: {error_body[:200]}")
-        raise Exception(f"MiniMax HTTP {e.code}: {error_body[:200]}")
+            log_callback(f"    {model_key} HTTP {e.code}: {error_body[:200]}")
+        raise Exception(f"{model_key} HTTP {e.code}: {error_body[:200]}")
     except Exception as e:
         if log_callback:
-            log_callback(f"    MiniMax error: {str(e)}")
+            log_callback(f"    {model_key} error: {str(e)}")
         raise
 
 

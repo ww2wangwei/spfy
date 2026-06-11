@@ -107,19 +107,11 @@ class WhisperEngine:
             if callback:
                 callback(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
 
-            # 计算时间偏移
-            time_offset = 0.0
-            if lead_time > 0:
-                time_offset = lead_time
-                if callback:
-                    callback(f"Applying lead time offset: {lead_time:.2f}s...")
-            else:
-                # 自动检测音频中第一个真正说话的时间
-                first_voice_time = self._detect_first_voice_time(audio_path)
-                if first_voice_time > 0.2:
-                    time_offset = first_voice_time
-                    if callback:
-                        callback(f"Detected audio starts at {first_voice_time:.2f}s, adjusting SRT timestamps...")
+            # Faster-Whisper 返回的 segment.start/end 已经是原音频时间轴。
+            # 不再自动检测首段语音并叠加偏移，否则会把字幕整体推迟。
+            time_offset = lead_time if lead_time else 0.0
+            if time_offset and callback:
+                callback(f"Applying manual timestamp offset: {time_offset:.2f}s...")
 
             # 生成 SRT 内容
             srt_lines = []

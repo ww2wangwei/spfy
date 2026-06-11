@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any
 import difflib
 import time
+import importlib
 
-# 从translator_engine导入配置
-from . import translator_engine
+translator_engine = importlib.import_module('video_tool.core.translator_engine')
 
 class ProofreadEngine:
     """字幕与逐字稿校对引擎"""
@@ -378,6 +378,7 @@ class ProofreadEngine:
 
         if log_callback:
             log_callback(f"加载完成: {len(srt_segments)} 字幕段")
+            log_callback(f"AI批次大小: {self.ai_proofread_batch_size}")
 
         if progress_callback:
             progress_callback(20, 100, "对比文本...")
@@ -631,7 +632,7 @@ class ProofreadEngine:
 请输出完整 JSON。"""
 
             if log_callback:
-                log_callback(f"正在调用MiniMax AI: 批次 {batch_no}/{total_batches}")
+                log_callback(f"正在调用大模型 {translator_engine.get_translation_model()}: 批次 {batch_no}/{total_batches}")
                 log_callback(f"提示词长度: {len(prompt)} 字符")
 
             # 调用AI
@@ -644,14 +645,24 @@ class ProofreadEngine:
                     log_callback(f"AI调用失败: {str(e)}")
                 raise
 
-            batch_result = self._parse_ai_proofread_result(corrected_text, len(srt_segments))
-            all_ai_segments.extend(batch_result.get('segments', []))
+            try:
+                batch_result = self._parse_ai_proofread_result(corrected_text, len(srt_segments))
+                parsed_segments = batch_result.get('segments', [])
+                all_ai_segments.extend(parsed_segments)
+                if log_callback:
+                    log_callback(f"批次 {batch_no}/{total_batches}: 解析到 {len(parsed_segments)} 段校对建议")
+            except Exception as e:
+                if log_callback:
+                    log_callback(f"批次 {batch_no}/{total_batches} 解析失败，已跳过该批次: {str(e)}")
+                continue
 
         if progress_callback:
             progress_callback(60, 100, "解析结果...")
 
         # 解析AI返回结果
         ai_segments = {item['segment_index']: item for item in all_ai_segments}
+        if log_callback and not ai_segments:
+            log_callback("AI未解析出可用的批次结果，将仅使用本地词典兜底生成校对版字幕")
 
         # 构建修正后的字幕段
         corrected_segments = []
@@ -865,6 +876,10 @@ class ProofreadEngine:
 
         # 获取当前配置的模型
         model_key = translator_engine.get_translation_model()
+        if model_key == "Google翻译(备用)":
+            raise Exception("字幕校对需要使用设置里的大模型，请不要选择 Google翻译(备用)")
+        if not translator_engine.MINIMAX_API_KEY:
+            raise Exception("未配置 API密钥，请在设置中填写并保存")
         minimax_model = translator_engine.TRANSLATION_MODELS.get(model_key, "abab6.5s-chat")
 
         if log_callback:
@@ -913,7 +928,7 @@ class ProofreadEngine:
 
             except urllib.error.HTTPError as e:
                 error_body = e.read().decode('utf-8') if e.fp else ''
-                last_error = f"MiniMax HTTP {e.code}: {error_body[:200]}"
+                last_error = f"{model_key} HTTP {e.code}: {error_body[:200]}"
                 if e.code not in retryable_codes or attempt == max_attempts:
                     raise Exception(last_error)
             except TimeoutError as e:
@@ -925,7 +940,7 @@ class ProofreadEngine:
                 if attempt == max_attempts:
                     raise Exception(last_error)
             except Exception as e:
-                last_error = f"MiniMax API调用失败: {str(e)}"
+                last_error = f"{model_key} API调用失败: {str(e)}"
                 if attempt == max_attempts:
                     raise Exception(last_error)
 
@@ -934,7 +949,7 @@ class ProofreadEngine:
                 log_callback(f"  AI请求失败，{wait_seconds}秒后重试 ({attempt + 1}/{max_attempts}): {last_error}")
             time.sleep(wait_seconds)
 
-        raise Exception(last_error or "MiniMax API调用失败")
+        raise Exception(last_error or f"{model_key} API调用失败")
 
     def _get_transcript_context(self, transcript: str, start: int, end: int,
                                 total_segments: int, max_chars: int = 9000) -> str:

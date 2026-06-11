@@ -5,6 +5,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+import urllib.request
+import urllib.error
 
 class ModelSettingsWindow:
     def __init__(self, parent):
@@ -60,6 +62,23 @@ class ModelSettingsWindow:
             messagebox.showerror("错误", f"保存设置失败: {str(e)}")
             return False
 
+    def _apply_runtime_settings(self):
+        """将当前设置立即应用到运行时"""
+        from ..core.translator_engine import update_translation_config
+        update_translation_config(
+            api_key=self.settings.get("api_key", ""),
+            api_url=self.settings.get("api_url", ""),
+            models=self.settings.get("models", {}),
+            current_model=self.settings.get("current_model", "")
+        )
+
+    def _save_and_apply(self, success_title: str = None):
+        """保存配置并立即应用"""
+        if self.save_settings():
+            self._apply_runtime_settings()
+            return True
+        return False
+
     def create_widgets(self):
         # API设置区域
         api_frame = ttk.LabelFrame(self.window, text="API设置", padding=10)
@@ -72,6 +91,7 @@ class ModelSettingsWindow:
         ttk.Label(api_frame, text="API地址:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.api_url_var = tk.StringVar(value=self.settings.get("api_url", ""))
         ttk.Entry(api_frame, textvariable=self.api_url_var, width=60).grid(row=1, column=1, padx=5)
+        ttk.Button(api_frame, text="刷新模型", command=self.refresh_models).grid(row=1, column=2, padx=5)
 
         # 模型列表区域
         list_frame = ttk.LabelFrame(self.window, text="模型列表", padding=10)
@@ -140,6 +160,77 @@ class ModelSettingsWindow:
         ttk.Button(bottom_frame, text="保存并应用", command=self.apply_and_save).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bottom_frame, text="取消", command=self.window.destroy).pack(side=tk.RIGHT, padx=5)
 
+    def refresh_models(self):
+        """根据 API 密钥和地址刷新模型列表"""
+        api_key = self.api_key_var.get().strip()
+        api_url = self.api_url_var.get().strip().rstrip('/')
+
+        if not api_key:
+            messagebox.showwarning("警告", "请先填写 API密钥")
+            return
+
+        if not api_url:
+            messagebox.showwarning("警告", "请先填写 API地址")
+            return
+
+        models_url = api_url
+        if not models_url.endswith('/models'):
+            if models_url.endswith('/v1'):
+                models_url = f"{models_url}/models"
+            else:
+                models_url = f"{models_url}/v1/models"
+
+        try:
+            req = urllib.request.Request(
+                models_url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method='GET'
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode('utf-8'))
+
+            model_items = result.get("data", [])
+            fetched_models = {}
+            for item in model_items:
+                model_id = str(item.get("id", "")).strip()
+                if model_id:
+                    fetched_models[model_id] = model_id
+
+            if not fetched_models:
+                raise Exception("接口返回成功，但没有获取到模型列表")
+
+            self.models = fetched_models
+            self.model_listbox.delete(0, tk.END)
+            for name in self.models.keys():
+                self.model_listbox.insert(tk.END, name)
+
+            self.current_combo['values'] = list(self.models.keys())
+            current_model = self.current_var.get()
+            if current_model not in self.models:
+                current_model = list(self.models.keys())[0]
+            self.current_var.set(current_model)
+            self.display_name_var.set(current_model)
+            self.model_id_var.set(self.models[current_model])
+
+            self.settings["api_key"] = api_key
+            self.settings["api_url"] = api_url
+            self.settings["models"] = self.models
+            self.settings["current_model"] = current_model
+
+            if self._save_and_apply():
+                messagebox.showinfo("成功", f"已刷新并保存 {len(self.models)} 个模型")
+            else:
+                return
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8', errors='ignore') if e.fp else ''
+            messagebox.showerror("错误", f"刷新模型失败: HTTP {e.code}\n{error_body[:300]}")
+        except Exception as e:
+            messagebox.showerror("错误", f"刷新模型失败: {str(e)}")
+
     def on_model_select(self, event):
         """选中模型时填充编辑框"""
         selection = self.model_listbox.curselection()
@@ -173,6 +264,9 @@ class ModelSettingsWindow:
         self.display_name_var.set("")
         self.model_id_var.set("")
 
+        self.settings["models"] = self.models
+        self._save_and_apply()
+
     def update_model(self):
         """更新模型"""
         selection = self.model_listbox.curselection()
@@ -198,6 +292,8 @@ class ModelSettingsWindow:
             self.models[old_name] = new_id
 
         self.current_combo['values'] = list(self.models.keys())
+        self.settings["models"] = self.models
+        self._save_and_apply()
 
     def delete_model(self):
         """删除模型"""
@@ -212,6 +308,11 @@ class ModelSettingsWindow:
             self.current_combo['values'] = list(self.models.keys())
             self.display_name_var.set("")
             self.model_id_var.set("")
+            self.settings["models"] = self.models
+            if self.current_var.get() not in self.models and self.models:
+                self.current_var.set(list(self.models.keys())[0])
+            self.settings["current_model"] = self.current_var.get()
+            self._save_and_apply()
 
     def set_default(self):
         """设为默认"""
@@ -221,6 +322,8 @@ class ModelSettingsWindow:
 
         name = self.model_listbox.get(selection[0])
         self.current_var.set(name)
+        self.settings["current_model"] = name
+        self._save_and_apply()
 
     def apply_and_save(self):
         """保存并应用"""
@@ -233,13 +336,7 @@ class ModelSettingsWindow:
         # 保存到文件
         if self.save_settings():
             # 更新全局配置
-            from ..core.translator_engine import update_translation_config
-            update_translation_config(
-                api_key=self.settings["api_key"],
-                api_url=self.settings["api_url"],
-                models=self.settings["models"],
-                current_model=self.settings["current_model"]
-            )
+            self._apply_runtime_settings()
 
             messagebox.showinfo("成功", "设置已保存并应用")
             self.window.destroy()

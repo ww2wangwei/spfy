@@ -300,7 +300,7 @@ Subtitle segments:
                     return result['choices'][0]['message']['content'].strip()
             except urllib.error.HTTPError as e:
                 error_body = e.read().decode('utf-8') if e.fp else ''
-                last_error = f"MiniMax HTTP {e.code}: {error_body[:200]}"
+                last_error = f"{model_key} HTTP {e.code}: {error_body[:200]}"
                 if e.code not in retryable_codes or attempt == max_attempts:
                     raise Exception(last_error)
             except TimeoutError as e:
@@ -312,7 +312,7 @@ Subtitle segments:
                 if attempt == max_attempts:
                     raise Exception(last_error)
             except Exception as e:
-                last_error = f"MiniMax API调用失败: {str(e)}"
+                last_error = f"{model_key} API调用失败: {str(e)}"
                 if attempt == max_attempts:
                     raise Exception(last_error)
 
@@ -321,7 +321,7 @@ Subtitle segments:
                 log_callback(f"  AI请求失败，{wait_seconds}秒后重试 ({attempt + 1}/{max_attempts}): {last_error}")
             time.sleep(wait_seconds)
 
-        raise Exception(last_error or "MiniMax API调用失败")
+        raise Exception(last_error or f"{model_key} API调用失败")
 
     def _parse_ai_result(self, ai_text: str, segment_count: int) -> List[Dict]:
         raw = ai_text.strip()

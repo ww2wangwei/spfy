@@ -228,7 +228,7 @@ English:"""
                 return translated
         except urllib.error.HTTPError as e:
             error_body = e.read().decode('utf-8') if e.fp else ''
-            raise Exception(f"MiniMax HTTP {e.code}: {error_body[:200]}")
+            raise Exception(f"{model_key} HTTP {e.code}: {error_body[:200]}")
         except Exception as e:
             raise Exception(f"逐字稿翻译失败: {str(e)}")
 
