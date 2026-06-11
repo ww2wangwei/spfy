@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+cache/
+*.log
+*.tmp
+model_settings.json
+../model_settings.json
+*.spec
+dist/
+build/
