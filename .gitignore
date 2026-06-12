@@ -6,5 +6,6 @@ cache/
 model_settings.json
 ../model_settings.json
 *.spec
+!video_tool_macos.spec
 dist/
 build/

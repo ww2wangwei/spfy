@@ -1,0 +1,65 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.py"
+      - "requirements-macos.txt"
+      - "video_tool_macos.spec"
+      - ".github/workflows/build-macos.yml"
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements-macos.txt
+
+      - name: Install system dependencies
+        run: |
+          brew update
+          brew install ffmpeg create-dmg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+
+      - name: Build app
+        run: |
+          python -m PyInstaller --clean -y video_tool_macos.spec
+
+      - name: Create DMG
+        run: |
+          mkdir -p release
+          create-dmg \
+            --volname "视频翻译工具" \
+            --window-pos 200 120 \
+            --window-size 640 420 \
+            --icon-size 100 \
+            --app-drop-link 480 200 \
+            "release/视频翻译工具-macOS.dmg" \
+            "dist/视频翻译工具.app"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-tool-macos-dmg
+          path: release/视频翻译工具-macOS.dmg
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-tool-macos-app
+          path: dist/视频翻译工具.app
