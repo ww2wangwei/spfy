@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Optional, Dict
 from faster_whisper import WhisperModel
 
@@ -83,7 +84,8 @@ class WhisperEngine:
                 raise
 
     def transcribe(self, audio_path: str, language: str = "Chinese", callback=None,
-                   convert_to_simplified: bool = True, lead_time: float = 0.0) -> str:
+                   convert_to_simplified: bool = True, lead_time: float = 0.0,
+                   progress_callback=None) -> str:
         """转录音频为 SRT 字幕"""
         if self.model is None:
             self.load_model(callback)
@@ -106,6 +108,8 @@ class WhisperEngine:
 
             if callback:
                 callback(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+                if getattr(info, 'duration', None):
+                    callback(f"Audio duration: {info.duration:.1f}s")
 
             # Faster-Whisper 返回的 segment.start/end 已经是原音频时间轴。
             # 不再自动检测首段语音并叠加偏移，否则会把字幕整体推迟。
@@ -115,10 +119,20 @@ class WhisperEngine:
 
             # 生成 SRT 内容
             srt_lines = []
+            last_progress_update = 0.0
             for i, segment in enumerate(segments, start=1):
                 start_time = segment.start + time_offset
                 end_time = segment.end + time_offset
                 text = segment.text.strip()
+
+                if progress_callback and getattr(info, 'duration', None):
+                    now = time.time()
+                    if now - last_progress_update >= 0.5:
+                        percent = 20 + min(58, int((segment.end / max(info.duration, 0.1)) * 58))
+                        progress_callback(percent, 100, f"正在转写: {segment.end:.1f}/{info.duration:.1f}s")
+                        last_progress_update = now
+                if callback and (i == 1 or i % 10 == 0):
+                    callback(f"Transcribed {i} segments, current time {segment.end:.1f}s")
 
                 # 繁体转简体
                 if convert_to_simplified:
@@ -129,6 +143,9 @@ class WhisperEngine:
                 srt_lines.append(f"{self._format_time(start_time)} --> {self._format_time(end_time)}")
                 srt_lines.append(text)
                 srt_lines.append("")
+
+            if progress_callback:
+                progress_callback(78, 100, f"转写完成，共 {len(srt_lines) // 4} 段")
 
             return '\n'.join(srt_lines)
 

@@ -29,11 +29,12 @@ def convert_mp3_to_srt(mp3_path: str, language: str = "Chinese", model_name: str
                 log_callback(f"  {message}")
         
         if progress_callback:
-            progress_callback(20, 100, "Model loaded, starting transcription...")
+            progress_callback(20, 100, "模型已加载，正在转写音频...")
         
         srt_content = whisper.transcribe(str(mp3_path), language, callback=log_wrapper, 
                                          convert_to_simplified=convert_to_simplified,
-                                         lead_time=lead_time)
+                                         lead_time=lead_time,
+                                         progress_callback=progress_callback)
         
         if progress_callback:
             progress_callback(80, 100, "Transcription complete, saving SRT...")

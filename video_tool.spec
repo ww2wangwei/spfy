@@ -4,6 +4,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 hiddenimports = []
 hiddenimports += collect_submodules('edge_tts')
+hiddenimports += collect_submodules('win32com')
+hiddenimports += collect_submodules('pythoncom')
 hiddenimports += collect_submodules('pysrt')
 
 datas = []
@@ -14,17 +16,19 @@ block_cipher = None
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['F:\\视频翻译工具'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['win32com', 'pythoncom', 'pywintypes'],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
 )
-
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
@@ -36,7 +40,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
+    upx=True,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -51,14 +55,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=False,
+    upx=True,
     upx_exclude=[],
     name='视频翻译工具',
-)
-
-app = BUNDLE(
-    coll,
-    name='视频翻译工具.app',
-    icon=None,
-    bundle_identifier='com.ww2wangwei.video-translator',
 )
