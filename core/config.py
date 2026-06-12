@@ -66,4 +66,9 @@ class ConfigManager:
     def ensure_cache_dir(self):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def get_model_settings_path(self):
+        """返回大模型设置文件路径，必须位于用户可写目录。"""
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        return self.cache_dir / "model_settings.json"
+
 config_manager = ConfigManager()

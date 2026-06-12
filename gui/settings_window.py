@@ -7,6 +7,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+from ..core import config_manager
 
 class ModelSettingsWindow:
     def __init__(self, parent):
@@ -16,9 +17,11 @@ class ModelSettingsWindow:
         self.window.transient(parent)
         self.window.grab_set()
 
-        # 配置文件路径
-        self.config_file = os.path.join(os.path.dirname(__file__), "..", "..", "model_settings.json")
-        self.config_file = os.path.abspath(self.config_file)
+        # 配置文件路径：安装目录通常不可写，必须保存到用户目录。
+        self.config_file = str(config_manager.get_model_settings_path())
+        self.legacy_config_file = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "model_settings.json")
+        )
 
         # 加载配置
         self.settings = self.load_settings()
@@ -47,6 +50,13 @@ class ModelSettingsWindow:
                         if key not in loaded:
                             loaded[key] = default_settings[key]
                     return loaded
+            if os.path.exists(self.legacy_config_file):
+                with open(self.legacy_config_file, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    for key in default_settings:
+                        if key not in loaded:
+                            loaded[key] = default_settings[key]
+                    return loaded
         except:
             pass
 
@@ -55,6 +65,7 @@ class ModelSettingsWindow:
     def save_settings(self):
         """保存设置"""
         try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=2)
             return True

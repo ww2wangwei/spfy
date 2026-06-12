@@ -252,9 +252,12 @@ class MainWindow:
 
     def _load_model_settings(self):
         """从设置文件加载大模型配置并应用到全局翻译配置"""
-        config_file = os.path.abspath(
+        config_file = str(config_manager.get_model_settings_path())
+        legacy_config_file = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "model_settings.json")
         )
+        if not os.path.exists(config_file) and os.path.exists(legacy_config_file):
+            config_file = legacy_config_file
         if not os.path.exists(config_file):
             return
 
