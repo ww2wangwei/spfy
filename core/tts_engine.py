@@ -1,8 +1,22 @@
 import os
 import re
 import asyncio
+import subprocess
 from edge_tts import Communicate
 from typing import Optional, List
+
+
+def _subprocess_no_window_kwargs() -> dict:
+    """Hide helper console windows when running ffmpeg/ffprobe from the GUI."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def _run_hidden(args, **kwargs):
+    kwargs.update(_subprocess_no_window_kwargs())
+    return subprocess.run(args, **kwargs)
+
 
 class TTSEngine:
     def __init__(self):
@@ -387,7 +401,6 @@ class TTSEngine:
     
     def _generate_silence(self, output_path: str, duration: float):
         """生成指定时长的静音音频"""
-        import subprocess
         args = [
             'ffmpeg',
             '-f', 'lavfi',
@@ -396,7 +409,7 @@ class TTSEngine:
             '-b:a', '128k',
             '-y', output_path
         ]
-        subprocess.run(args, capture_output=True, check=True)
+        _run_hidden(args, capture_output=True, check=True)
     
     def _calculate_cps(self, text: str, duration: float) -> float:
         """
@@ -526,8 +539,6 @@ class TTSEngine:
         speed_ratio > 1.0 表示加速（音频变短）
         speed_ratio < 1.0 表示减速（音频变长）
         """
-        import subprocess
-
         # 使用atempo滤镜调整速度
         # atempo只接受0.5-2.0的范围，需要链式处理
         tempo_filters = []
@@ -558,11 +569,10 @@ class TTSEngine:
             '-b:a', '128k',
             '-y', output_path
         ]
-        subprocess.run(args, capture_output=True, check=True)
+        _run_hidden(args, capture_output=True, check=True)
     
     def _truncate_audio(self, input_path: str, output_path: str, duration: float):
         """截断音频到指定时长"""
-        import subprocess
         args = [
             'ffmpeg',
             '-i', input_path,
@@ -573,7 +583,7 @@ class TTSEngine:
             '-b:a', '128k',
             '-y', output_path
         ]
-        subprocess.run(args, capture_output=True, check=True)
+        _run_hidden(args, capture_output=True, check=True)
     
     def _generate_new_srt(self, segments: List[dict], actual_durations: List[float], gaps: List[float], 
                           original_start_time: float = 0.0) -> str:
@@ -672,8 +682,7 @@ class TTSEngine:
     
     def _get_audio_duration(self, audio_path: str) -> float:
         try:
-            import subprocess
-            result = subprocess.run(
+            result = _run_hidden(
                 ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
                  '-of', 'default=nokey=1:noprint_wrappers=1', audio_path],
                 capture_output=True,
@@ -688,16 +697,14 @@ class TTSEngine:
         return 0.0
     
     def _speed_audio(self, input_path: str, output_path: str, speed: float):
-        import subprocess
         args = [
             'ffmpeg', '-i', input_path,
             '-filter:a', f'atempo={speed}',
             '-y', output_path
         ]
-        subprocess.run(args, capture_output=True)
+        _run_hidden(args, capture_output=True)
     
     def _merge_audio_files(self, input_files: List[str], output_path: str):
-        import subprocess
         import tempfile
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
@@ -716,7 +723,7 @@ class TTSEngine:
             '-y', output_path
         ]
         try:
-            subprocess.run(args, capture_output=True, check=True)
+            _run_hidden(args, capture_output=True, check=True)
         finally:
             os.remove(list_file)
     
@@ -842,9 +849,8 @@ class TTSEngine:
             f.write(f"file '{input_path}'\n")
             f.write(f"file '{silence_path}'\n")
 
-        import subprocess
         args = ['ffmpeg', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-y', output_path]
-        subprocess.run(args, capture_output=True)
+        _run_hidden(args, capture_output=True)
         os.remove(list_file)
         if os.path.exists(silence_path):
             os.remove(silence_path)
@@ -999,8 +1005,7 @@ class TTSEngine:
             f.write(f"file '{input_path}'\n")
             f.write(f"file '{silence_file}'\n")
 
-        import subprocess
-        subprocess.run([
+        _run_hidden([
             'ffmpeg', '-f', 'concat', '-safe', '0',
             '-i', list_file, '-c', 'copy', '-y', output_path
         ], capture_output=True)
@@ -1017,7 +1022,6 @@ class TTSEngine:
         1. 第一段开始时间前添加静音
         2. 每段音频结束后，填充静音直到下一段开始时间
         """
-        import subprocess
         import tempfile
 
         if callback:
@@ -1068,7 +1072,7 @@ class TTSEngine:
         if callback:
             callback(f"  Total files to merge: {len(total_files)}")
 
-        subprocess.run([
+        _run_hidden([
             'ffmpeg', '-f', 'concat', '-safe', '0',
             '-i', list_file.name,
             '-ac', '1', '-ar', '24000',
@@ -1087,7 +1091,6 @@ class TTSEngine:
 
     def _merge_concat(self, input_files: list, output_path: str):
         """使用ffmpeg concat合并音频"""
-        import subprocess
         import tempfile
 
         list_file = tempfile.NamedTemporaryFile(
@@ -1097,7 +1100,7 @@ class TTSEngine:
             list_file.write(f"file '{f}'\n")
         list_file.close()
 
-        subprocess.run([
+        _run_hidden([
             'ffmpeg', '-f', 'concat', '-safe', '0',
             '-i', list_file.name,
             '-ac', '1', '-ar', '24000',

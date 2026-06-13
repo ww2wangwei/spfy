@@ -6,6 +6,12 @@ from typing import List, Optional
 class FFmpegExecutor:
     def __init__(self, ffmpeg_path: str = "ffmpeg"):
         self.ffmpeg_path = ffmpeg_path
+
+    def _subprocess_kwargs(self) -> dict:
+        """Hide FFmpeg console windows when this app runs as a Windows GUI."""
+        if os.name == "nt":
+            return {"creationflags": subprocess.CREATE_NO_WINDOW}
+        return {}
     
     def run_command(self, args: List[str], callback=None) -> str:
         full_cmd = [self.ffmpeg_path] + args
@@ -17,7 +23,8 @@ class FFmpegExecutor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     encoding='utf-8',
-                    errors='ignore'
+                    errors='ignore',
+                    **self._subprocess_kwargs()
                 )
                 output_lines = []
                 while True:
@@ -38,7 +45,8 @@ class FFmpegExecutor:
                     capture_output=True,
                     text=True,
                     encoding='utf-8',
-                    errors='ignore'
+                    errors='ignore',
+                    **self._subprocess_kwargs()
                 )
                 if result.returncode != 0:
                     raise Exception(f"FFmpeg command failed: {result.stderr}")
@@ -109,7 +117,8 @@ class FFmpegExecutor:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='ignore'
+                errors='ignore',
+                **self._subprocess_kwargs()
             )
             import json
             info = json.loads(result.stdout)
@@ -169,7 +178,8 @@ class FFmpegExecutor:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='ignore'
+                errors='ignore',
+                **self._subprocess_kwargs()
             )
             encoders = result.stdout
             if 'h264_nvenc' in encoders:
@@ -189,7 +199,8 @@ class FFmpegExecutor:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='ignore'
+                errors='ignore',
+                **self._subprocess_kwargs()
             )
             import json
             info = json.loads(result.stdout)

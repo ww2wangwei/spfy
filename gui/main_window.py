@@ -80,6 +80,7 @@ class MainWindow:
         # 停止标志
         self._stop_requested = False
         self._current_thread = None
+        self._completion_popup_shown = False
         
         self.setup_styles()
         self.create_menu()
@@ -228,6 +229,33 @@ class MainWindow:
         ttk.Button(option_row, text="打开缓存", command=self.open_cache_dir).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(option_row, text="清空缓存", command=self.clear_cache).pack(side=tk.RIGHT)
 
+        progress_frame = ttk.LabelFrame(main_frame, text="执行状态", padding=(12, 8), style="Card.TLabelframe")
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.progress_var = tk.IntVar(value=0)
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=0, column=0, columnspan=3, sticky=tk.EW, pady=(0, 6))
+
+        self.progress_label = ttk.Label(
+            progress_frame,
+            text="就绪",
+            wraplength=900,
+            justify=tk.LEFT
+        )
+        self.progress_label.grid(row=1, column=0, sticky=tk.EW, padx=(0, 12))
+
+        self.stop_button = ttk.Button(progress_frame, text="停止", command=self.stop_task, style="Danger.TButton")
+        self.stop_button.grid(row=1, column=1, sticky=tk.E, padx=(0, 12))
+        self.stop_button.config(state=tk.DISABLED)
+
+        self.cache_size_label = ttk.Label(
+            progress_frame,
+            text=f"缓存大小: {get_dir_size(str(config_manager.get_cache_dir()))}",
+            style="Muted.TLabel"
+        )
+        self.cache_size_label.grid(row=1, column=2, sticky=tk.E)
+        progress_frame.columnconfigure(0, weight=1)
+
         workspace = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
         workspace.pack(fill=tk.BOTH, expand=True)
 
@@ -239,11 +267,36 @@ class MainWindow:
         func_frame = ttk.LabelFrame(left_panel, text="功能流程", padding=(14, 10), style="Card.TLabelframe")
         func_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        button_frame = ttk.Frame(func_frame, style="Panel.TFrame")
-        button_frame.pack(fill=tk.BOTH, expand=True)
+        workflow_canvas = tk.Canvas(
+            func_frame,
+            bg=self.colors["panel"],
+            highlightthickness=0,
+            bd=0
+        )
+        workflow_scrollbar = ttk.Scrollbar(func_frame, orient=tk.VERTICAL, command=workflow_canvas.yview)
+        workflow_canvas.configure(yscrollcommand=workflow_scrollbar.set)
+        workflow_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        workflow_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        button_frame = ttk.Frame(workflow_canvas, style="Panel.TFrame")
+        workflow_window = workflow_canvas.create_window((0, 0), window=button_frame, anchor=tk.NW)
+
+        def _update_workflow_scrollregion(_event=None):
+            workflow_canvas.configure(scrollregion=workflow_canvas.bbox("all"))
+
+        def _resize_workflow_content(event):
+            workflow_canvas.itemconfigure(workflow_window, width=event.width)
+
+        def _on_workflow_mousewheel(event):
+            workflow_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        button_frame.bind("<Configure>", _update_workflow_scrollregion)
+        workflow_canvas.bind("<Configure>", _resize_workflow_content)
+        workflow_canvas.bind("<Enter>", lambda _event: workflow_canvas.bind_all("<MouseWheel>", _on_workflow_mousewheel))
+        workflow_canvas.bind("<Leave>", lambda _event: workflow_canvas.unbind_all("<MouseWheel>"))
 
         player_frame = ttk.LabelFrame(right_panel, text="视频播放器", padding=(12, 10), style="Card.TLabelframe")
-        player_frame.pack(fill=tk.BOTH, expand=True, padx=(10, 0), pady=(0, 10))
+        player_frame.pack(fill=tk.X, padx=(10, 0), pady=(0, 10))
 
         self.player_host = tk.Frame(
             player_frame,
@@ -253,7 +306,7 @@ class MainWindow:
             highlightbackground="#1e293b",
             highlightthickness=1
         )
-        self.player_host.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.player_host.pack(fill=tk.X, pady=(0, 10))
         self.player_host.pack_propagate(False)
         self.player_host.bind("<Configure>", lambda _event: self._resize_embedded_player())
         self.active_player_host = self.player_host
@@ -314,33 +367,12 @@ class MainWindow:
         for col in range(2):
             button_frame.columnconfigure(col, weight=1, uniform="workflow")
         for group_index, (title, buttons) in enumerate(groups):
-            group = ttk.LabelFrame(button_frame, text=title, padding=(10, 8), style="Card.TLabelframe")
-            group.grid(row=group_index // 2, column=group_index % 2, sticky=tk.NSEW, padx=6, pady=6)
+            group = ttk.LabelFrame(button_frame, text=title, padding=(8, 6), style="Card.TLabelframe")
+            group.grid(row=group_index // 2, column=group_index % 2, sticky=tk.NSEW, padx=5, pady=5)
             group.columnconfigure(0, weight=1)
             for i, text in enumerate(buttons):
-                style_name = "Primary.TButton" if text in {"① 批量 MP4 → MP3", "④ 中文字幕翻译", "⑨ 烧录硬字幕(-sub)"} else "Step.TButton"
-                btn = ttk.Button(group, text=text, command=cmd_map[text], style=style_name)
-                btn.grid(row=i, column=0, sticky=tk.EW, pady=3)
-
-        progress_frame = ttk.LabelFrame(right_panel, text="执行状态", padding=(12, 10), style="Card.TLabelframe")
-        progress_frame.pack(fill=tk.X, padx=(10, 0), pady=(0, 10))
-
-        self.progress_var = tk.IntVar(value=0)
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(fill=tk.X, pady=(0, 8))
-
-        progress_info_frame = ttk.Frame(progress_frame)
-        progress_info_frame.pack(fill=tk.X)
-
-        self.progress_label = ttk.Label(progress_info_frame, text="就绪")
-        self.progress_label.pack(side=tk.LEFT)
-
-        self.stop_button = ttk.Button(progress_info_frame, text="停止", command=self.stop_task, style="Danger.TButton")
-        self.stop_button.pack(side=tk.LEFT, padx=10)
-        self.stop_button.config(state=tk.DISABLED)
-
-        self.cache_size_label = ttk.Label(progress_info_frame, text=f"缓存大小: {get_dir_size(str(config_manager.get_cache_dir()))}", style="Muted.TLabel")
-        self.cache_size_label.pack(side=tk.RIGHT)
+                btn = ttk.Button(group, text=text, command=cmd_map[text], style="Step.TButton")
+                btn.grid(row=i, column=0, sticky=tk.EW, pady=2)
 
         log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding=(10, 8), style="Card.TLabelframe")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
@@ -442,6 +474,8 @@ class MainWindow:
                 self._add_log_safe(item[1])
             elif item[0] == 'progress':
                 self._update_progress_safe(item[1], item[2], item[3])
+            elif item[0] == 'progress_reset':
+                self._reset_progress_safe()
         self.root.after(100, self.process_download_queue)
     
     def _add_log_safe(self, message):
@@ -455,6 +489,9 @@ class MainWindow:
             percentage = int((current / total) * 100)
             self.progress_var.set(percentage)
             self.progress_label.config(text=f"{message} ({percentage}%)")
+            if percentage >= 100 and not self._completion_popup_shown:
+                self._completion_popup_shown = True
+                self.root.after(100, lambda: messagebox.showinfo("任务完成", "任务已完成"))
         else:
             self.progress_var.set(0)
             self.progress_label.config(text=message)
@@ -874,6 +911,7 @@ class MainWindow:
     def _start_task(self):
         """任务开始时调用"""
         self._stop_requested = False
+        self._completion_popup_shown = False
         self.stop_button.config(state=tk.NORMAL)  # 启用停止按钮
     
     def _check_stop(self) -> bool:
@@ -1238,22 +1276,53 @@ class MainWindow:
         self.add_log(f"术语校对模型: {self.selected_translation_model.get()}")
 
         def run_task():
-            self._start_task()
             try:
-                proofread_english_terms(
+                output_path, report_path, stats = proofread_english_terms(
                     srt_path=srt_file,
                     domain=domain,
                     glossary_path=glossary_path,
                     progress_callback=self.update_progress,
                     log_callback=self.add_log
                 )
+                self.root.after(
+                    0,
+                    lambda: self._show_terminology_result(output_path, report_path, stats)
+                )
             except Exception as e:
-                self.add_log(f"✗ 英文术语校对失败: {str(e)}")
-            finally:
-                self._reset_progress_safe()
+                error_msg = str(e)
+                self.add_log(f"✗ 英文术语校对失败: {error_msg}")
+                self.root.after(0, lambda: self._show_task_error("英文术语校对失败", error_msg))
 
         self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
+
+    def _show_terminology_result(self, output_path, report_path, stats):
+        """显示英文术语校对结果，避免完成后看起来没有反应。"""
+        self._completion_popup_shown = True
+        self.progress_var.set(100)
+        changed_segments = stats.get('changed_segments', 0)
+        changed_terms = stats.get('changed_terms', 0)
+        subtitle_lines = stats.get('subtitle_lines', 0)
+
+        if changed_terms:
+            status = f"英文术语校对完成：修改 {changed_terms} 个术语，涉及 {changed_segments} 段"
+        else:
+            status = f"英文术语校对完成：检查 {subtitle_lines} 段，未发现需要修改的术语"
+        self.progress_label.config(text=status)
+        self.stop_button.config(state=tk.DISABLED)
+        self._stop_requested = False
+
+        messagebox.showinfo(
+            "英文术语校对完成",
+            f"{status}\n\n校对字幕:\n{output_path}\n\n校对报告:\n{report_path}"
+        )
+
+    def _show_task_error(self, title, error_msg):
+        """显示后台任务错误，并保留失败状态。"""
+        self.progress_label.config(text=f"{title}: {error_msg}")
+        self.stop_button.config(state=tk.DISABLED)
+        self._stop_requested = False
+        messagebox.showerror("错误", f"{title}:\n{error_msg}")
 
     def _ask_terminology_options(self):
         """弹出英文术语校对参数窗口"""
