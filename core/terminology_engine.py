@@ -134,7 +134,7 @@ class TerminologyEngine:
         ai_edits_by_index = {item['segment_index']: item for item in ai_edits}
 
         for seg in segments:
-            corrected_text = seg['text']
+            corrected_text = self._clean_subtitle_text(seg['text'])
             applied = []
 
             corrected_text, glossary_edits = self._apply_glossary_annotations(corrected_text, glossary)
@@ -260,7 +260,12 @@ Subtitle segments:
                     f"AI术语校对 {batch_no}/{total_batches}，正在解析..."
                 )
 
-            result = self._parse_ai_result(response, len(segments))
+            try:
+                result = self._parse_ai_result(response, len(segments))
+            except Exception as e:
+                result = []
+                if log_callback:
+                    log_callback(f"批次 {batch_no}/{total_batches}: AI返回格式异常，已保守跳过: {str(e)}")
             if log_callback:
                 log_callback(f"批次 {batch_no}/{total_batches}: AI返回 {len(result)} 段术语建议")
             all_edits.extend(result)
@@ -324,18 +329,9 @@ Subtitle segments:
         raise Exception(last_error or f"{model_key} API调用失败")
 
     def _parse_ai_result(self, ai_text: str, segment_count: int) -> List[Dict]:
-        raw = ai_text.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            match = re.search(r'(\{.*\})', raw, re.DOTALL)
-            if not match:
-                return []
-            data = json.loads(match.group(1))
+        data = self._extract_first_json_object(ai_text)
+        if not isinstance(data, dict):
+            return []
 
         items = []
         for item in data.get('segments', []):
@@ -350,7 +346,7 @@ Subtitle segments:
                 wrong = str(edit.get('wrong', '')).strip()
                 correct = str(edit.get('correct', '')).strip()
                 source = str(edit.get('source', 'domain')).strip() or 'domain'
-                if wrong and correct and wrong != correct:
+                if self._is_safe_term_edit(wrong, correct):
                     edits.append({'wrong': wrong, 'correct': correct, 'source': source})
 
             if edits:
@@ -360,6 +356,102 @@ Subtitle segments:
                     'reason': str(item.get('reason', '')).strip()
                 })
         return items
+
+    def _is_safe_term_edit(self, wrong: str, correct: str) -> bool:
+        """只接受“术语 -> 术语”的安全修改，拒绝AI解释、句子改写和思考残留。"""
+        if not wrong or not correct or wrong == correct:
+            return False
+        if len(wrong) > 80 or len(correct) > 80:
+            return False
+        blocked_patterns = [
+            r'(?i)\b(let me|i think|given the context|or more natural|or even shorter)\b',
+            r'(?i)\b(this is|that is|this works|alternative|characters?|count)\b',
+            r'(?i)\b(reason|explanation|analysis|standard technical term)\b',
+            r'<\s*/?\s*think\s*>',
+            r'```',
+            r'->',
+            r'\n',
+        ]
+        combined = f"{wrong} {correct}"
+        if any(re.search(pattern, combined) for pattern in blocked_patterns):
+            return False
+        # 术语通常是短语，不应是完整解释句。
+        if len(correct.split()) > 8:
+            return False
+        return True
+
+    def _clean_subtitle_text(self, text: str) -> str:
+        """清除英文字幕中明显的AI思考/候选翻译残留。
+
+        该清理只处理高置信度模式，避免改写正常字幕内容。
+        """
+        if not text:
+            return text
+
+        cleaned = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+        try:
+            cleaned = translator_engine.strip_reasoning_artifacts(cleaned)
+        except Exception:
+            pass
+
+        cleanup_patterns = [
+            r'(?is)\s*"\s*\(\d+\s*chars?\)\s*[-–—]?.*$',
+            r'(?is)\s*"\s*(?:or|Or)\s*:.*$',
+            r'(?is)\s+(?:Or more natural|Or even shorter|Given the context|I think|Following)\b.*$',
+            r'(?is)\s+"?\s*(?:This is|That is|This works|Actually|Alternative)\b.*$',
+            r'(?is)\s+\(\d+\s*chars?.*$',
+            r'(?is)^\s*[-–—]\s*["“](.*?)["”]\s*$', 
+        ]
+        for pattern in cleanup_patterns:
+            cleaned = re.sub(pattern, '', cleaned).strip()
+
+        cleaned = re.sub(r'(?is)<\s*think\s*>.*?<\s*/\s*think\s*>', '', cleaned)
+        cleaned = re.sub(r'(?is)<\s*think\s*>.*$', '', cleaned)
+        cleaned = re.sub(r'^\s*[-–—]\s*["“](.*)$', r'\1', cleaned).strip()
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip('"“”')
+        return cleaned
+
+    def _extract_first_json_object(self, ai_text: str) -> Dict:
+        """从AI返回中提取第一个有效JSON对象。
+
+        打包版运行时有些模型会返回 ```json 代码块、JSON 后追加说明、
+        或连续输出多个 JSON 对象。这里只取第一个可解析对象，解析不到则保守跳过。
+        """
+        raw = (ai_text or "").strip()
+        if not raw:
+            return {}
+
+        candidates = []
+
+        fenced = re.findall(r"```(?:json)?\s*(.*?)```", raw, flags=re.DOTALL | re.IGNORECASE)
+        candidates.extend(block.strip() for block in fenced if block.strip())
+        candidates.append(raw)
+
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            cleaned = candidate.strip()
+            if not cleaned:
+                continue
+
+            # 先尝试完整解析，适合干净JSON。
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+            # 再从每一个左花括号开始 raw_decode，适合 JSON 后有额外文字或多个JSON。
+            for match in re.finditer(r"\{", cleaned):
+                try:
+                    parsed, _end = decoder.raw_decode(cleaned[match.start():])
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+
+        return {}
 
     def _apply_glossary_annotations(self, text: str, glossary: Dict[str, str]) -> Tuple[str, List[Dict]]:
         edits = [{'wrong': wrong, 'correct': correct, 'source': 'glossary'}

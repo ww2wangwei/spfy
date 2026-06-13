@@ -6,6 +6,7 @@ import json
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import List, Dict, Optional, Tuple
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -296,17 +297,39 @@ def strip_reasoning_artifacts(text: str) -> str:
         r"This\s+(?:sentence|subtitle|translation)\b).*$"
     )
     cleaned = re.sub(trailing_reasoning_pattern, '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+    high_confidence_tail_patterns = [
+        # e.g. Title block is crucial" (24 chars)
+        r'(?is)^(.+?)["”]\s*\(\s*\d+\s*(?:chars?|characters?)\s*\).*$',
+        # e.g. No signature block on drawing." (
+        r'(?is)^(.+?)["”]\s*\(.*$',
+        # e.g. Five, when meeting requirements" - too long
+        r'(?is)^(.+?)["”]\s*[-–—]\s*(?:too\s+\w+|already\b|shorter\b|better\b|concise\b|simple\b).*$',
+        # e.g. Last is drawing number." I think "Last is ...
+        r'(?is)^(.+?)["”]\s*(?:[-–—]\s*)?(?:I\s+think|Given\s+the\s+context|Following)\b.*$',
+        # e.g. Items and Lines Position" Or: "Items and ...
+        r'(?is)^(.+?)["”]\s*(?:[-–—]\s*)?(?:Or\s*:|Or\s+more\s+natural|Or\s+even\s+shorter)\b.*$',
+        # e.g. Drawing text" - This is ...
+        r'(?is)^(.+?)["”]\s*(?:[-–—]\s*)?(?:This\s+is|That\s+is|This\s+works|This\s+seems|Actually|Alternative)\b.*$',
+        # e.g. - "Total sheets count
+        r'(?is)^\s*[-–—]\s*["“](.+)$',
+    ]
+    for pattern in high_confidence_tail_patterns:
+        cleaned = re.sub(pattern, r'\1', cleaned).strip()
     cleaned = re.sub(r'\s*["\'“”]?\s*[-–—]\s*This\s+is\s+\d+.*$', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
     # 模型常把候选翻译接在第二个引号后面，只保留第一个候选前的正文。
     cleaned = re.sub(r'(?s)^(.+?)["”]\s+["“].*$', r'\1', cleaned)
     cleaned = re.sub(r'(?s)^(.+?)["”]\s*(?:[-–—]\s*)?["“].*$', r'\1', cleaned)
-    cleaned = re.sub(r'(?is)\s+(?:Alternative\s*:|Actually\b|This\s+seems\b|This\s+is\s+basically\b|Character\b|That\'?s\s+shorter\b).*$',
+    cleaned = re.sub(r'(?is)\s+(?:Alternative\s*:|Actually\b|This\s+seems\b|This\s+is\s+basically\b|Character\b|That\'?s\s+shorter\b|I\s+think\b|Given\s+the\s+context\b|Or\s*:).*$',
                      '', cleaned)
     cleaned = re.sub(r'(?is)["”]\s*(?:[-–—]\s*)?(?:It\'?s|That\'?s|This\s+is|Change|Click|Press|Hold|Tap|Select|Use)\b.*$',
                      '', cleaned)
     # 如果模型给了多个候选翻译，只保留第一个候选。
     cleaned = re.sub(r'\s+(?:or|OR)\s+["“].*$', '', cleaned, flags=re.DOTALL)
     cleaned = re.sub(r'^\s*[-–—]\s*["“](.*?)["”]\s*[-–—].*$', r'\1', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'\s*\(\s*\d+\s*(?:chars?|characters?)\s*\)\s*$', '', cleaned, flags=re.IGNORECASE)
+    # 如果译文正文后面接双引号和候选/解释尾巴，只保留双引号前的正文。
+    # 例如: Recorded as 34/a6" or simply "34/a6" Given...
+    cleaned = re.sub(r'(?s)^(.+?)["”].*$', r'\1', cleaned).strip()
     cleaned = re.sub(r'["""''「」『』【】]+$', '', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
@@ -337,7 +360,7 @@ def looks_like_reasoning(text: str) -> bool:
     if alpha_count == 0:
         return True
 
-    if re.search(r'(?i)\b(the\s+user\s+wants\s+me|let\s+me(?:\s+\w+)?|i\s+need\s+to\s+translate|shortening|well\s+under\s+\d+|or\s+even\s+shorter|characters\s*[✓-]|count\s*:)\b', stripped):
+    if re.search(r'(?i)\b(the\s+user\s+wants\s+me|let\s+me(?:\s+\w+)?|i\s+(?:need\s+to\s+translate|think)|given\s+the\s+context|shortening|well\s+under\s+\d+|or\s+even\s+shorter|or\s+more\s+natural|characters\s*[✓-]|count\s*:)\b', stripped):
         return True
 
     return word_count >= 5 and stripped.endswith(':')
@@ -365,6 +388,128 @@ def translate_with_google_timeout(text: str, timeout: int = 10) -> str:
         raise TimeoutError(f"Google翻译超过{timeout}秒未响应")
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _run_with_timeout(func, timeout: int, timeout_message: str):
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError:
+        future.cancel()
+        raise TimeoutError(timeout_message)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _normalize_fallback_translation(text: str, max_chars: int) -> str:
+    cleaned = strip_reasoning_artifacts(text or "")
+    cleaned = truncate_to_max_chars(cleaned, max_chars)
+    if not cleaned or has_chinese_residue(cleaned) or looks_like_reasoning(cleaned):
+        raise Exception("备用翻译结果仍含中文或AI残留")
+    return cleaned
+
+
+def translate_with_mymemory_timeout(text: str, timeout: int = 12, max_chars: int = 120) -> str:
+    """使用 MyMemory 免费接口作为兜底翻译。"""
+    def _translate():
+        if DEEP_TRANSLATOR_AVAILABLE:
+            from deep_translator import MyMemoryTranslator
+            return MyMemoryTranslator(source='zh-CN', target='en-US').translate(text)
+
+        params = urllib.parse.urlencode({
+            "q": text,
+            "langpair": "zh-CN|en"
+        })
+        req = urllib.request.Request(
+            f"https://api.mymemory.translated.net/get?{params}",
+            headers={"User-Agent": "video-tool/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+            return data.get("responseData", {}).get("translatedText", "")
+
+    return _normalize_fallback_translation(
+        _run_with_timeout(_translate, timeout, f"MyMemory翻译超过{timeout}秒未响应"),
+        max_chars
+    )
+
+
+def translate_with_libre_timeout(text: str, timeout: int = 12, max_chars: int = 120) -> str:
+    """使用 LibreTranslate 公共接口作为兜底翻译。"""
+    endpoints = [
+        os.environ.get("LIBRETRANSLATE_URL", "").strip(),
+        "https://libretranslate.de/translate",
+        "https://translate.argosopentech.com/translate",
+    ]
+    endpoints = [url for url in endpoints if url]
+
+    def _translate():
+        last_error = None
+        for endpoint in endpoints:
+            payload = {
+                "q": text,
+                "source": "zh",
+                "target": "en",
+                "format": "text"
+            }
+            try:
+                req = urllib.request.Request(
+                    endpoint,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "User-Agent": "video-tool/1.0"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    data = json.loads(response.read().decode("utf-8", errors="ignore"))
+                    translated = data.get("translatedText") or data.get("translation") or ""
+                    if translated:
+                        return translated
+            except Exception as e:
+                last_error = e
+        raise Exception(str(last_error) if last_error else "LibreTranslate无可用接口")
+
+    return _normalize_fallback_translation(
+        _run_with_timeout(_translate, timeout, f"LibreTranslate超过{timeout}秒未响应"),
+        max_chars
+    )
+
+
+def translate_with_argos_local(text: str, max_chars: int = 120) -> str:
+    """使用可选 Argos Translate 离线兜底；未安装或无语言包时抛错。"""
+    import argostranslate.translate
+
+    installed_languages = argostranslate.translate.get_installed_languages()
+    source = next((lang for lang in installed_languages if lang.code in ("zh", "zh_cn", "zh-CN")), None)
+    target = next((lang for lang in installed_languages if lang.code == "en"), None)
+    if not source or not target:
+        raise Exception("Argos未安装中英语言包")
+    translation = source.get_translation(target)
+    return _normalize_fallback_translation(translation.translate(text), max_chars)
+
+
+def translate_with_fallback_chain(text: str, max_chars: int, log_callback=None) -> str:
+    """免费/可选兜底翻译链，尽量避免英文字幕中残留中文。"""
+    providers = [
+        ("Google", lambda: _normalize_fallback_translation(translate_with_google_timeout(text, timeout=10), max_chars)),
+        ("MyMemory", lambda: translate_with_mymemory_timeout(text, timeout=12, max_chars=max_chars)),
+        ("LibreTranslate", lambda: translate_with_libre_timeout(text, timeout=12, max_chars=max_chars)),
+        ("Argos离线", lambda: translate_with_argos_local(text, max_chars=max_chars)),
+    ]
+
+    errors = []
+    for name, fn in providers:
+        try:
+            translated = fn()
+            if log_callback:
+                log_callback(f"    {name}兜底成功: {translated[:30]}...")
+            return translated
+        except Exception as e:
+            errors.append(f"{name}: {str(e)[:60]}")
+            if log_callback:
+                log_callback(f"    {name}兜底失败: {str(e)[:80]}")
+
+    raise Exception("；".join(errors))
 
 def make_translation_prompt(text: str, target_lang: str = "en") -> str:
     """
@@ -1547,17 +1692,13 @@ def translate_srt_strict_netflix(srt_path: str, target_lang: str = "en",
             )
         except Exception as e:
             if log_callback:
-                log_callback(f"  {get_translation_model()} 失败，改用Google翻译: {str(e)[:80]}")
+                log_callback(f"  {get_translation_model()} 失败，改用免费兜底翻译链: {str(e)[:80]}")
             try:
-                en_text = translate_with_google_timeout(cn_text, timeout=10)
-                en_text = strip_reasoning_artifacts(en_text)
-                en_text = truncate_to_max_chars(en_text, max_chars)
-                if log_callback:
-                    log_callback(f"    Google翻译成功: {en_text[:30]}...")
+                en_text = translate_with_fallback_chain(cn_text, max_chars=max_chars, log_callback=log_callback)
             except Exception as fallback_error:
                 if log_callback:
-                    log_callback(f"    Google翻译也失败，保留原中文并继续下一段: {str(fallback_error)[:80]}")
-                en_text = cn_text
+                    log_callback(f"    所有免费兜底翻译失败，标记失败并继续下一段: {str(fallback_error)[:120]}")
+                en_text = "[Translation Failed]"
 
         # 处理英文内部换行（≤42字符/行，最多2行）
         en_text_formatted = format_english_subtitle(en_text)

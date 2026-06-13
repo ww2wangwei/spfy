@@ -4,7 +4,11 @@ import threading
 import queue
 import json
 import os
+import sys
+import subprocess
+import time
 import importlib
+from pathlib import Path
 from ..core import config_manager, task_manager
 from ..tasks import (
     convert_mp4_to_mp3,
@@ -29,8 +33,8 @@ class MainWindow:
     def __init__(self, root):
         self.root = root
         self.root.title("视频处理工具")
-        self.root.geometry("900x650")
-        self.root.minsize(850, 600)
+        self.root.geometry("1120x700")
+        self.root.minsize(1000, 650)
 
         self.languages = ["中文(普通话)", "English", "Japanese", "Korean", "French", "German"]
         self.language_map = {"中文(普通话)": "Chinese", "English": "English", "Japanese": "Japanese",
@@ -56,6 +60,22 @@ class MainWindow:
         self.max_speed = tk.DoubleVar(value=1.3)
         self.burn_acceleration = tk.BooleanVar(value=False)
         self.selected_translate_lang = tk.StringVar(value="English")
+        self.player_video_path = tk.StringVar(value="")
+        self.player_video_name = tk.StringVar(value="未选择视频")
+        self.auto_play_burn_result = tk.BooleanVar(value=True)
+        self.player_process = None
+        self.player_window = None
+        self.fullscreen_process = None
+        self.fullscreen_window = None
+        self.active_player_host = None
+        self.player_title = "video_tool_embedded_player"
+        self.player_duration = 0.0
+        self.player_offset = 0.0
+        self.player_started_at = None
+        self.player_paused = False
+        self.player_seeking = False
+        self.player_progress_var = tk.DoubleVar(value=0.0)
+        self.player_time_var = tk.StringVar(value="00:00 / 00:00")
         
         # 停止标志
         self._stop_requested = False
@@ -72,6 +92,7 @@ class MainWindow:
         
         self.download_queue = queue.Queue()
         self.root.after(100, self.process_download_queue)
+        self.root.after(500, self._update_player_progress)
     
     def create_menu(self):
         menubar = tk.Menu(self.root)
@@ -155,6 +176,60 @@ class MainWindow:
         func_frame = ttk.LabelFrame(main_frame, text="功能", padding=10)
         func_frame.pack(fill=tk.X, padx=5, pady=5)
 
+        func_content = ttk.Frame(func_frame)
+        func_content.pack(fill=tk.X)
+
+        button_frame = ttk.Frame(func_content)
+        button_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        player_frame = ttk.LabelFrame(func_content, text="视频播放器", padding=8)
+        player_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(12, 0))
+
+        self.player_host = tk.Frame(
+            player_frame,
+            bg="#111111",
+            width=320,
+            height=190
+        )
+        self.player_host.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.player_host.pack_propagate(False)
+        self.player_host.bind("<Configure>", lambda _event: self._resize_embedded_player())
+        self.active_player_host = self.player_host
+
+        ttk.Label(player_frame, textvariable=self.player_video_name, width=32).pack(fill=tk.X, pady=(0, 6))
+
+        progress_row = ttk.Frame(player_frame)
+        progress_row.pack(fill=tk.X, pady=(0, 6))
+        self.player_scale = ttk.Scale(
+            progress_row,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.player_progress_var
+        )
+        self.player_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.player_scale.bind("<ButtonPress-1>", self._on_player_seek_start)
+        self.player_scale.bind("<ButtonRelease-1>", self._on_player_seek_end)
+        ttk.Label(progress_row, textvariable=self.player_time_var, width=15).pack(side=tk.LEFT)
+
+        player_buttons = ttk.Frame(player_frame)
+        player_buttons.pack(fill=tk.X)
+        ttk.Button(player_buttons, text="选择视频", command=self.choose_player_video, width=9).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(player_buttons, text="暂停", command=self.pause_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(player_buttons, text="继续", command=self.resume_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(player_buttons, text="全屏", command=self.play_player_video_fullscreen, width=7).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(player_buttons, text="恢复", command=self.restore_player_window, width=7).pack(side=tk.LEFT)
+
+        player_buttons2 = ttk.Frame(player_frame)
+        player_buttons2.pack(fill=tk.X, pady=(5, 0))
+        ttk.Button(player_buttons2, text="打开目录", command=self.open_player_video_folder, width=9).pack(side=tk.LEFT)
+
+        ttk.Checkbutton(
+            player_frame,
+            text="第9步完成后自动播放",
+            variable=self.auto_play_burn_result
+        ).pack(anchor=tk.W, pady=(6, 0))
+
         # 使用4列网格布局
         btn_specs = [
             ("① 批量 MP4 → MP3", 0, 0),
@@ -167,6 +242,7 @@ class MainWindow:
             ("⑧ 合并音视频(-new)", 2, 1),
             ("⑨ 烧录硬字幕(-sub)", 2, 2),
             ("⑩ 批量逐字稿翻译", 3, 0),
+            ("⑪ 局部修正视频", 3, 1),
         ]
 
         for text, row, col in btn_specs:
@@ -181,8 +257,9 @@ class MainWindow:
                 "⑧ 合并音视频(-new)": self.do_merge_av,
                 "⑨ 烧录硬字幕(-sub)": self.do_burn_sub,
                 "⑩ 批量逐字稿翻译": self.do_transcript_translate,
+                "⑪ 局部修正视频": self.do_local_correction,
             }
-            btn = ttk.Button(func_frame, text=text, command=cmd_map[text], width=22)
+            btn = ttk.Button(button_frame, text=text, command=cmd_map[text], width=22)
             btn.grid(row=row, column=col, padx=5, pady=5, sticky=tk.W)
 
         # 进度条区域
@@ -321,6 +398,401 @@ class MainWindow:
         self.progress_label.config(text="就绪")
         self.stop_button.config(state=tk.DISABLED)  # 禁用停止按钮
         self._stop_requested = False  # 重置停止标志
+
+    def choose_player_video(self):
+        """选择一个视频放入右侧播放器面板"""
+        file = filedialog.askopenfilename(
+            title="选择要播放的视频",
+            filetypes=[("视频文件", "*.mp4;*.mov;*.mkv;*.avi"), ("所有文件", "*.*")]
+        )
+        if file:
+            self.set_player_video(file)
+            self.play_player_video()
+
+    def set_player_video(self, video_path):
+        """设置播放器当前视频"""
+        path = Path(video_path)
+        self.player_video_path.set(str(path))
+        self.player_video_name.set(path.name if path.name else "未选择视频")
+        self.player_duration = self._get_video_duration(str(path))
+        self.player_offset = 0.0
+        self.player_started_at = None
+        self.player_paused = False
+        self.player_progress_var.set(0.0)
+        self._update_player_time_label(0.0)
+        self.add_log(f"播放器: 当前视频 {path}")
+
+    def play_player_video(self):
+        """在右侧播放器区域播放当前视频"""
+        video_path = self.player_video_path.get().strip()
+        if not video_path:
+            messagebox.showwarning("提示", "请先选择要播放的视频")
+            return
+        if not os.path.exists(video_path):
+            messagebox.showwarning("提示", "视频文件不存在")
+            return
+        try:
+            if not self._play_in_embedded_window(video_path, start_time=self.player_offset, host=self.player_host):
+                self._open_path(video_path)
+        except Exception as e:
+            messagebox.showerror("错误", f"播放视频失败: {str(e)}")
+
+    def stop_embedded_player(self):
+        """停止右侧内嵌播放器"""
+        self._stop_player_processes()
+        self.player_offset = 0.0
+        self.player_started_at = None
+        self.player_paused = False
+        self.player_progress_var.set(0.0)
+        self._update_player_time_label(0.0)
+
+    def _stop_player_processes(self):
+        if self.player_process and self.player_process.poll() is None:
+            try:
+                self.player_process.terminate()
+            except Exception:
+                pass
+        if self.fullscreen_process and self.fullscreen_process.poll() is None:
+            try:
+                self.fullscreen_process.terminate()
+            except Exception:
+                pass
+        self.player_process = None
+        self.player_window = None
+        self.fullscreen_process = None
+        self.active_player_host = self.player_host
+
+    def pause_player_video(self):
+        """暂停当前视频"""
+        if self.player_paused:
+            return
+        if self.player_process and self.player_process.poll() is None:
+            host = self.active_player_host
+            self.player_offset = self._current_player_position()
+            self._stop_player_processes()
+            self.active_player_host = host or self.player_host
+            self.player_started_at = None
+            self.player_paused = True
+            self.player_progress_var.set(self.player_offset)
+            self._update_player_time_label(self.player_offset)
+            self.add_log(f"播放器: 已暂停在 {self._format_seconds(self.player_offset)}")
+
+    def resume_player_video(self):
+        """继续播放当前视频"""
+        video_path = self.player_video_path.get().strip()
+        if not video_path:
+            messagebox.showwarning("提示", "请先选择要播放的视频")
+            return
+        if self.player_paused:
+            self._play_in_embedded_window(
+                video_path,
+                start_time=self.player_offset,
+                host=self.active_player_host or self.player_host
+            )
+            self.add_log(f"播放器: 从 {self._format_seconds(self.player_offset)} 继续播放")
+            return
+        self.play_player_video()
+
+    def _send_player_key(self, key):
+        if not self.player_window or sys.platform != "win32":
+            return
+        try:
+            import win32api
+            import win32con
+            import win32gui
+
+            vk = win32api.VkKeyScan(key) & 0xff
+            win32gui.PostMessage(self.player_window, win32con.WM_KEYDOWN, vk, 0)
+            win32gui.PostMessage(self.player_window, win32con.WM_KEYUP, vk, 0)
+        except Exception as e:
+            self.add_log(f"播放器: 暂停/继续控制失败: {str(e)}")
+
+    def play_player_video_fullscreen(self):
+        """打开带控制栏的全屏播放窗口"""
+        video_path = self.player_video_path.get().strip()
+        if not video_path:
+            messagebox.showwarning("提示", "请先选择要播放的视频")
+            return
+        if not os.path.exists(video_path):
+            messagebox.showwarning("提示", "视频文件不存在")
+            return
+
+        start_time = self._current_player_position()
+        self._stop_player_processes()
+        if self.fullscreen_window and self.fullscreen_window.winfo_exists():
+            self.fullscreen_window.destroy()
+
+        win = tk.Toplevel(self.root)
+        win.title("全屏播放器")
+        win.attributes("-fullscreen", True)
+        win.configure(bg="#111111")
+        win.protocol("WM_DELETE_WINDOW", self.restore_player_window)
+        win.bind("<Escape>", lambda _event: self.restore_player_window())
+        self.fullscreen_window = win
+
+        video_host = tk.Frame(win, bg="#111111")
+        video_host.pack(fill=tk.BOTH, expand=True)
+        video_host.bind("<Configure>", lambda _event: self._resize_embedded_player())
+
+        controls = ttk.Frame(win, padding=8)
+        controls.pack(fill=tk.X)
+
+        full_scale = ttk.Scale(
+            controls,
+            from_=0,
+            to=max(1.0, self.player_duration),
+            orient=tk.HORIZONTAL,
+            variable=self.player_progress_var
+        )
+        full_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        full_scale.bind("<ButtonPress-1>", self._on_player_seek_start)
+        full_scale.bind("<ButtonRelease-1>", self._on_player_seek_end)
+        ttk.Label(controls, textvariable=self.player_time_var, width=15).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(controls, text="暂停", command=self.pause_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(controls, text="继续", command=self.resume_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(controls, text="恢复窗口", command=self.restore_player_window, width=10).pack(side=tk.LEFT)
+
+        self._play_in_embedded_window(video_path, start_time=start_time, host=video_host)
+        self.add_log(f"播放器: 全屏播放 {video_path}")
+
+    def restore_player_window(self):
+        """关闭全屏播放并恢复右侧窗口播放"""
+        if self.fullscreen_process and self.fullscreen_process.poll() is None:
+            try:
+                self.fullscreen_process.terminate()
+            except Exception:
+                pass
+        self.fullscreen_process = None
+        video_path = self.player_video_path.get().strip()
+        if self.fullscreen_window and self.fullscreen_window.winfo_exists():
+            self.fullscreen_window.destroy()
+        self.fullscreen_window = None
+        if video_path and os.path.exists(video_path):
+            self.player_offset = self._current_player_position()
+            self._play_in_embedded_window(video_path, start_time=self.player_offset, host=self.player_host)
+
+    def _play_in_embedded_window(self, video_path, start_time=0.0, host=None):
+        ffplay_path = self._get_ffplay_path()
+        if not ffplay_path:
+            self.add_log("播放器: 未找到 ffplay，改用系统默认播放器")
+            return False
+
+        self._stop_player_processes()
+        host = host or self.player_host
+        self.active_player_host = host
+        host.update_idletasks()
+        width = max(240, host.winfo_width())
+        height = max(120, host.winfo_height())
+        title = f"{self.player_title}_{os.getpid()}"
+        self.player_title = title
+
+        cmd = [
+            ffplay_path,
+            "-window_title", title,
+            "-x", str(width),
+            "-y", str(height),
+            "-autoexit",
+            "-loglevel", "quiet",
+            "-ss", f"{max(0.0, float(start_time)):.3f}",
+            video_path
+        ]
+        self.player_process = subprocess.Popen(cmd)
+        self.player_offset = max(0.0, float(start_time))
+        self.player_started_at = time.monotonic()
+        self.player_paused = False
+        self.root.after(300, lambda: self._embed_ffplay_window(title, host, attempts=20))
+        self.add_log(f"播放器: 正在窗口内播放 {video_path}")
+        return True
+
+    def _get_ffplay_path(self):
+        ffmpeg_path = config_manager.get_ffmpeg_path()
+        candidates = []
+        if ffmpeg_path and ffmpeg_path != "ffmpeg":
+            ffmpeg_file = Path(ffmpeg_path)
+            candidates.append(str(ffmpeg_file.with_name("ffplay.exe")))
+        candidates.append("ffplay")
+
+        for candidate in candidates:
+            try:
+                result = subprocess.run(
+                    [candidate, "-version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                if result.returncode == 0:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    def _get_ffprobe_path(self):
+        ffmpeg_path = config_manager.get_ffmpeg_path()
+        candidates = []
+        if ffmpeg_path and ffmpeg_path != "ffmpeg":
+            ffmpeg_file = Path(ffmpeg_path)
+            candidates.append(str(ffmpeg_file.with_name("ffprobe.exe")))
+        candidates.append("ffprobe")
+        for candidate in candidates:
+            try:
+                result = subprocess.run(
+                    [candidate, "-version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                if result.returncode == 0:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    def _get_video_duration(self, video_path):
+        ffprobe_path = self._get_ffprobe_path()
+        if not ffprobe_path:
+            return 0.0
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=nokey=1:noprint_wrappers=1",
+                    video_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return max(0.0, float(result.stdout.strip()))
+        except Exception:
+            pass
+        return 0.0
+
+    def _current_player_position(self):
+        if self.player_started_at is None or self.player_paused:
+            pos = self.player_offset
+        else:
+            pos = self.player_offset + (time.monotonic() - self.player_started_at)
+        if self.player_duration > 0:
+            pos = min(pos, self.player_duration)
+        return max(0.0, pos)
+
+    def _update_player_progress(self):
+        if not self.player_seeking:
+            pos = self._current_player_position()
+            if self.player_duration > 0:
+                self.player_progress_var.set(pos)
+                self.player_scale.configure(to=self.player_duration)
+            else:
+                self.player_progress_var.set(0.0)
+            self._update_player_time_label(pos)
+        self.root.after(500, self._update_player_progress)
+
+    def _update_player_time_label(self, pos):
+        self.player_time_var.set(f"{self._format_seconds(pos)} / {self._format_seconds(self.player_duration)}")
+
+    def _format_seconds(self, seconds):
+        seconds = max(0, int(seconds or 0))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        if h:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    def _on_player_seek_start(self, _event=None):
+        self.player_seeking = True
+
+    def _on_player_seek_end(self, _event=None):
+        self.player_seeking = False
+        target = float(self.player_progress_var.get())
+        self.seek_player_video(target)
+
+    def seek_player_video(self, target):
+        video_path = self.player_video_path.get().strip()
+        if not video_path or not os.path.exists(video_path):
+            return
+        self.player_offset = max(0.0, min(float(target), self.player_duration if self.player_duration > 0 else float(target)))
+        self._update_player_time_label(self.player_offset)
+        self._play_in_embedded_window(video_path, start_time=self.player_offset, host=self.active_player_host or self.player_host)
+
+    def _embed_ffplay_window(self, title, host, attempts=20):
+        if not self.player_process or self.player_process.poll() is not None:
+            return
+        if sys.platform != "win32":
+            return
+        try:
+            import win32con
+            import win32gui
+
+            hwnd = self._find_window_by_title(title)
+            if not hwnd:
+                if attempts > 0:
+                    self.root.after(250, lambda: self._embed_ffplay_window(title, host, attempts - 1))
+                return
+
+            host_hwnd = host.winfo_id()
+            win32gui.SetParent(hwnd, host_hwnd)
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            style = style & ~win32con.WS_CAPTION & ~win32con.WS_THICKFRAME & ~win32con.WS_POPUP
+            style = style | win32con.WS_CHILD | win32con.WS_VISIBLE
+            win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, style)
+            self.player_window = hwnd
+            self.active_player_host = host
+            self._resize_embedded_player()
+        except Exception as e:
+            self.add_log(f"播放器: 内嵌播放失败，保留独立窗口: {str(e)}")
+
+    def _find_window_by_title(self, title):
+        import win32gui
+
+        matched = []
+
+        def enum_handler(hwnd, _ctx):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title:
+                matched.append(hwnd)
+
+        win32gui.EnumWindows(enum_handler, None)
+        return matched[0] if matched else None
+
+    def _resize_embedded_player(self):
+        if not self.player_window or sys.platform != "win32":
+            return
+        try:
+            import win32gui
+            host = self.active_player_host or self.player_host
+            width = max(1, host.winfo_width())
+            height = max(1, host.winfo_height())
+            win32gui.MoveWindow(self.player_window, 0, 0, width, height, True)
+        except Exception:
+            pass
+
+    def open_player_video_folder(self):
+        """打开当前视频所在目录"""
+        video_path = self.player_video_path.get().strip()
+        if not video_path:
+            messagebox.showwarning("提示", "请先选择要播放的视频")
+            return
+        folder = str(Path(video_path).parent)
+        if os.path.exists(folder):
+            open_file_explorer(folder)
+
+    def _open_path(self, path):
+        if hasattr(os, "startfile"):
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+
+    def _get_burn_output_path(self, video_file):
+        video_path = Path(video_file)
+        base_name = video_path.stem
+        if base_name.endswith('-new'):
+            base_name = base_name[:-4]
+        return video_path.parent / f"{base_name}_final.mp4"
     
     def stop_task(self):
         """强制停止当前任务"""
@@ -614,13 +1086,20 @@ class MainWindow:
         
         def run_task():
             try:
-                burn_subtitle(
+                success_count, _fail_count = burn_subtitle(
                     video_file,
                     srt_file,
                     use_hardware_accel=self.burn_acceleration.get(),
                     progress_callback=self.update_progress,
                     log_callback=self.add_log
                 )
+                output_path = self._get_burn_output_path(video_file)
+                if success_count > 0 and output_path.exists():
+                    def update_player():
+                        self.set_player_video(str(output_path))
+                        if self.auto_play_burn_result.get():
+                            self.play_player_video()
+                    self.root.after(0, update_player)
             finally:
                 self._reset_progress_safe()
         
@@ -861,6 +1340,17 @@ class MainWindow:
         self._start_task()
         threading.Thread(target=run_task, daemon=True).start()
 
+    def do_local_correction(self):
+        """打开局部修正工作台"""
+        from .local_correction_window import LocalCorrectionWindow
+        LocalCorrectionWindow(
+            self.root,
+            voice_getter=lambda: self.selected_voice.get(),
+            hardware_accel_getter=lambda: self.burn_acceleration.get(),
+            log_callback=self.add_log,
+            progress_callback=self.update_progress
+        )
+
     def open_cache_dir(self):
         cache_dir = str(config_manager.get_cache_dir())
         open_file_explorer(cache_dir)    
@@ -893,13 +1383,19 @@ class MainWindow:
 
 4. 中文字幕翻译：选择中文字幕文件，翻译为英文或其他语言
 
-5. SRT → MP3：选择SRT文件，使用TTS转换为语音
+5. 英文术语校对：按专业方向或词库校对英文字幕术语
 
-6. MP4 去声音：选择MP4文件，移除音频轨道生成静音视频
+6. SRT → MP3：选择SRT文件，使用TTS转换为语音
 
-7. 合并音视频：选择目录，自动匹配-mute.mp4和.mp3文件合并
+7. MP4 去声音：选择MP4文件，移除音频轨道生成静音视频
 
-8. 烧录硬字幕：选择目录，自动匹配-new.mp4和.srt文件烧录
+8. 合并音视频：选择目录，自动匹配-mute.mp4和.mp3文件合并
+
+9. 烧录硬字幕：选择目录，自动匹配-new.mp4和.srt文件烧录
+
+10. 批量逐字稿翻译：选择逐字稿文件，翻译为中英表格Word
+
+11. 局部修正视频：按SRT段落快速修改字幕、导出单段配音、重新烧录视频
 
 工作流程示例：
 MP4 → 去声音 → MP3 → 识别 → SRT → 翻译 → TTS → 合并 → 烧录
@@ -907,5 +1403,6 @@ MP4 → 去声音 → MP3 → 识别 → SRT → 翻译 → TTS → 合并 → �
         messagebox.showinfo("使用说明", help_text)
     
     def on_closing(self):
+        self.stop_embedded_player()
         task_manager.stop()
         self.root.destroy()
