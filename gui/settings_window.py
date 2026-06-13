@@ -13,7 +13,9 @@ class ModelSettingsWindow:
     def __init__(self, parent):
         self.window = tk.Toplevel(parent)
         self.window.title("大模型设置")
-        self.window.geometry("700x500")
+        self.window.geometry("780x560")
+        self.window.minsize(720, 520)
+        self.window.configure(bg="#eef2f7")
         self.window.transient(parent)
         self.window.grab_set()
 
@@ -91,22 +93,26 @@ class ModelSettingsWindow:
         return False
 
     def create_widgets(self):
+        root = ttk.Frame(self.window, padding=(14, 12), style="App.TFrame")
+        root.pack(fill=tk.BOTH, expand=True)
+
         # API设置区域
-        api_frame = ttk.LabelFrame(self.window, text="API设置", padding=10)
-        api_frame.pack(fill=tk.X, padx=10, pady=5)
+        api_frame = ttk.LabelFrame(root, text="API设置", padding=(12, 10), style="Card.TLabelframe")
+        api_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(api_frame, text="API密钥:").grid(row=0, column=0, sticky=tk.W, pady=5)
         self.api_key_var = tk.StringVar(value=self.settings.get("api_key", ""))
-        ttk.Entry(api_frame, textvariable=self.api_key_var, width=60).grid(row=0, column=1, padx=5)
+        ttk.Entry(api_frame, textvariable=self.api_key_var, width=60, show="*").grid(row=0, column=1, sticky=tk.EW, padx=5)
 
         ttk.Label(api_frame, text="API地址:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.api_url_var = tk.StringVar(value=self.settings.get("api_url", ""))
-        ttk.Entry(api_frame, textvariable=self.api_url_var, width=60).grid(row=1, column=1, padx=5)
-        ttk.Button(api_frame, text="刷新模型", command=self.refresh_models).grid(row=1, column=2, padx=5)
+        ttk.Entry(api_frame, textvariable=self.api_url_var, width=60).grid(row=1, column=1, sticky=tk.EW, padx=5)
+        ttk.Button(api_frame, text="刷新模型", command=self.refresh_models, style="Primary.TButton").grid(row=1, column=2, padx=5)
+        api_frame.columnconfigure(1, weight=1)
 
         # 模型列表区域
-        list_frame = ttk.LabelFrame(self.window, text="模型列表", padding=10)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        list_frame = ttk.LabelFrame(root, text="模型列表", padding=(12, 10), style="Card.TLabelframe")
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # 模型列表框
         listbox_frame = ttk.Frame(list_frame)
@@ -115,7 +121,18 @@ class ModelSettingsWindow:
         scrollbar = ttk.Scrollbar(listbox_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.model_listbox = tk.Listbox(listbox_frame, height=10, yscrollcommand=scrollbar.set)
+        self.model_listbox = tk.Listbox(
+            listbox_frame,
+            height=10,
+            yscrollcommand=scrollbar.set,
+            font=("Microsoft YaHei UI", 9),
+            bg="#ffffff",
+            fg="#1f2937",
+            selectbackground="#2563eb",
+            selectforeground="#ffffff",
+            relief=tk.SOLID,
+            bd=1
+        )
         self.model_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.model_listbox.yview)
 
@@ -151,11 +168,11 @@ class ModelSettingsWindow:
         ttk.Button(btn_frame, text="添加", command=self.add_model).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="更新", command=self.update_model).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="删除", command=self.delete_model).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="设为默认", command=self.set_default).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="设为默认", command=self.set_default, style="Primary.TButton").pack(side=tk.LEFT, padx=5)
 
         # 当前默认模型
-        default_frame = ttk.Frame(self.window)
-        default_frame.pack(fill=tk.X, padx=10, pady=5)
+        default_frame = ttk.Frame(root, style="App.TFrame")
+        default_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(default_frame, text="当前使用:").pack(side=tk.LEFT, padx=5)
         self.current_var = tk.StringVar(value=self.settings.get("current_model", ""))
@@ -165,10 +182,10 @@ class ModelSettingsWindow:
         self.current_combo.pack(side=tk.LEFT, padx=5)
 
         # 底部按钮
-        bottom_frame = ttk.Frame(self.window)
-        bottom_frame.pack(fill=tk.X, padx=10, pady=10)
+        bottom_frame = ttk.Frame(root, style="App.TFrame")
+        bottom_frame.pack(fill=tk.X)
 
-        ttk.Button(bottom_frame, text="保存并应用", command=self.apply_and_save).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(bottom_frame, text="保存并应用", command=self.apply_and_save, style="Primary.TButton").pack(side=tk.RIGHT, padx=5)
         ttk.Button(bottom_frame, text="取消", command=self.window.destroy).pack(side=tk.RIGHT, padx=5)
 
     def refresh_models(self):

@@ -16,7 +16,9 @@ class LocalCorrectionWindow:
     def __init__(self, parent, voice_getter, hardware_accel_getter, log_callback, progress_callback):
         self.window = tk.Toplevel(parent)
         self.window.title("局部修正视频")
-        self.window.geometry("980x650")
+        self.window.geometry("1100x720")
+        self.window.minsize(980, 640)
+        self.window.configure(bg="#eef2f7")
         self.window.transient(parent)
 
         self.voice_getter = voice_getter
@@ -50,11 +52,11 @@ class LocalCorrectionWindow:
         self._create_widgets()
 
     def _create_widgets(self):
-        root = ttk.Frame(self.window, padding=10)
+        root = ttk.Frame(self.window, padding=(14, 12), style="App.TFrame")
         root.pack(fill=tk.BOTH, expand=True)
 
-        file_frame = ttk.LabelFrame(root, text="文件", padding=8)
-        file_frame.pack(fill=tk.X)
+        file_frame = ttk.LabelFrame(root, text="文件", padding=(12, 10), style="Card.TLabelframe")
+        file_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(file_frame, text="SRT字幕:").grid(row=0, column=0, sticky=tk.W, padx=(0, 6), pady=4)
         ttk.Entry(file_frame, textvariable=self.srt_var).grid(row=0, column=1, sticky=tk.EW, pady=4)
@@ -72,11 +74,11 @@ class LocalCorrectionWindow:
         list_frame = ttk.Frame(body)
         body.add(list_frame, weight=3)
 
-        search_frame = ttk.Frame(list_frame)
+        search_frame = ttk.Frame(list_frame, style="App.TFrame")
         search_frame.pack(fill=tk.X, pady=(0, 6))
-        search_row1 = ttk.Frame(search_frame)
+        search_row1 = ttk.Frame(search_frame, style="App.TFrame")
         search_row1.pack(fill=tk.X, pady=(0, 4))
-        search_row2 = ttk.Frame(search_frame)
+        search_row2 = ttk.Frame(search_frame, style="App.TFrame")
         search_row2.pack(fill=tk.X)
 
         ttk.Label(search_row1, text="段号:").pack(side=tk.LEFT, padx=(0, 4))
@@ -128,25 +130,37 @@ class LocalCorrectionWindow:
         tree_frame.columnconfigure(0, weight=1)
         self.tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
 
-        edit_frame = ttk.LabelFrame(body, text="当前段落", padding=10)
+        edit_frame = ttk.LabelFrame(body, text="当前段落", padding=(12, 10), style="Card.TLabelframe")
         body.add(edit_frame, weight=2)
 
         ttk.Label(edit_frame, textvariable=self.segment_var).pack(anchor=tk.W)
-        self.text_box = tk.Text(edit_frame, height=10, wrap=tk.WORD)
+        self.text_box = tk.Text(
+            edit_frame,
+            height=10,
+            wrap=tk.WORD,
+            font=("Microsoft YaHei UI", 10),
+            bg="#ffffff",
+            fg="#1f2937",
+            relief=tk.SOLID,
+            bd=1,
+            padx=8,
+            pady=8
+        )
         self.text_box.pack(fill=tk.BOTH, expand=True, pady=8)
 
         btn_frame = ttk.Frame(edit_frame)
         btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="应用到当前段", command=self._apply_current).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_frame, text="应用到当前段", command=self._apply_current, style="Primary.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(btn_frame, text="保存修正版SRT", command=self._save_srt).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_frame, text="试听/生成本段MP3", command=self._generate_segment_audio).pack(side=tk.LEFT, padx=6)
         ttk.Label(edit_frame, textvariable=self.modified_var).pack(anchor=tk.W, pady=(8, 0))
 
-        action_frame = ttk.LabelFrame(root, text="输出", padding=8)
+        action_frame = ttk.LabelFrame(root, text="输出", padding=(12, 10), style="Card.TLabelframe")
         action_frame.pack(fill=tk.X)
         ttk.Button(action_frame, text="只修字幕并重新烧录", command=self._burn_video).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(action_frame, text="批量替换已修改段声音+重新烧录", command=self._replace_audio_and_burn).pack(side=tk.LEFT)
-        ttk.Label(action_frame, text="提示：请选择无硬字幕源视频；已烧录硬字幕的视频不能干净擦除原字幕。").pack(side=tk.LEFT, padx=12)
+        ttk.Button(action_frame, text="批量替换已修改段声音+重新烧录", command=self._replace_audio_and_burn, style="Primary.TButton").pack(side=tk.LEFT)
+        ttk.Label(action_frame, text="提示：请选择无硬字幕源视频；已烧录硬字幕的视频不能干净擦除原字幕。",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=12)
 
     def _choose_srt(self):
         path = filedialog.askopenfilename(title="选择SRT字幕", filetypes=[("SRT字幕", "*.srt"), ("所有文件", "*.*")])

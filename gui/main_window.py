@@ -33,8 +33,8 @@ class MainWindow:
     def __init__(self, root):
         self.root = root
         self.root.title("视频处理工具")
-        self.root.geometry("1120x700")
-        self.root.minsize(1000, 650)
+        self.root.geometry("1320x820")
+        self.root.minsize(1180, 720)
 
         self.languages = ["中文(普通话)", "English", "Japanese", "Korean", "French", "German"]
         self.language_map = {"中文(普通话)": "Chinese", "English": "English", "Japanese": "Japanese",
@@ -81,6 +81,7 @@ class MainWindow:
         self._stop_requested = False
         self._current_thread = None
         
+        self.setup_styles()
         self.create_menu()
         self.create_widgets()
         
@@ -93,6 +94,62 @@ class MainWindow:
         self.download_queue = queue.Queue()
         self.root.after(100, self.process_download_queue)
         self.root.after(500, self._update_player_progress)
+
+    def setup_styles(self):
+        """统一主界面视觉样式。"""
+        self.colors = {
+            "bg": "#eef2f7",
+            "panel": "#ffffff",
+            "panel_alt": "#f8fafc",
+            "border": "#d7dee8",
+            "text": "#1f2937",
+            "muted": "#64748b",
+            "primary": "#2563eb",
+            "primary_active": "#1d4ed8",
+            "danger": "#dc2626",
+            "danger_active": "#b91c1c",
+            "console": "#111827",
+            "console_text": "#d1d5db",
+        }
+        self.root.configure(bg=self.colors["bg"])
+
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", font=("Microsoft YaHei UI", 9), foreground=self.colors["text"])
+        style.configure("App.TFrame", background=self.colors["bg"])
+        style.configure("Panel.TFrame", background=self.colors["panel"])
+        style.configure("Muted.TLabel", background=self.colors["panel"], foreground=self.colors["muted"])
+        style.configure("Title.TLabel", background=self.colors["bg"], foreground=self.colors["text"],
+                        font=("Microsoft YaHei UI", 16, "bold"))
+        style.configure("Subtitle.TLabel", background=self.colors["bg"], foreground=self.colors["muted"])
+        style.configure("Card.TLabelframe", background=self.colors["panel"], bordercolor=self.colors["border"],
+                        relief=tk.SOLID)
+        style.configure("Card.TLabelframe.Label", background=self.colors["bg"], foreground=self.colors["text"],
+                        font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("TLabel", background=self.colors["panel"], foreground=self.colors["text"])
+        style.configure("TCheckbutton", background=self.colors["panel"], foreground=self.colors["text"])
+        style.configure("TEntry", fieldbackground="#ffffff", bordercolor=self.colors["border"])
+        style.configure("TCombobox", fieldbackground="#ffffff", bordercolor=self.colors["border"])
+        style.configure("TButton", padding=(10, 6), background="#f8fafc", bordercolor=self.colors["border"],
+                        focusthickness=1, focuscolor=self.colors["primary"])
+        style.map("TButton", background=[("active", "#e2e8f0")])
+        style.configure("Primary.TButton", foreground="#ffffff", background=self.colors["primary"],
+                        bordercolor=self.colors["primary"], font=("Microsoft YaHei UI", 9, "bold"))
+        style.map("Primary.TButton", background=[("active", self.colors["primary_active"]),
+                                                  ("disabled", "#94a3b8")])
+        style.configure("Danger.TButton", foreground="#ffffff", background=self.colors["danger"],
+                        bordercolor=self.colors["danger"], font=("Microsoft YaHei UI", 9, "bold"))
+        style.map("Danger.TButton", background=[("active", self.colors["danger_active"]),
+                                                ("disabled", "#fca5a5")])
+        style.configure("Step.TButton", anchor=tk.W, padding=(12, 8), background="#ffffff",
+                        bordercolor=self.colors["border"])
+        style.map("Step.TButton", background=[("active", "#eff6ff")], bordercolor=[("active", self.colors["primary"])])
+        style.configure("Horizontal.TProgressbar", troughcolor="#e2e8f0", background=self.colors["primary"],
+                        bordercolor="#e2e8f0", lightcolor=self.colors["primary"], darkcolor=self.colors["primary"])
     
     def create_menu(self):
         menubar = tk.Menu(self.root)
@@ -115,91 +172,96 @@ class MainWindow:
         self.root.config(menu=menubar)
     
     def create_widgets(self):
-        main_frame = ttk.Frame(self.root, padding=5)
+        main_frame = ttk.Frame(self.root, style="App.TFrame", padding=(14, 12, 14, 12))
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 参数配置区域 - 使用PanedWindow实现左右分栏
-        param_frame = ttk.LabelFrame(main_frame, text="参数配置", padding=10)
-        param_frame.pack(fill=tk.X, padx=5, pady=5)
+        header = ttk.Frame(main_frame, style="App.TFrame")
+        header.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(header, text="视频翻译工具", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, text="识别、翻译、配音、合成、校对与局部修正的一体化工作台",
+                  style="Subtitle.TLabel").pack(side=tk.LEFT, padx=(14, 0), pady=(6, 0))
+        ttk.Button(header, text="设置", command=self.show_settings).pack(side=tk.RIGHT)
 
-        # 第一行：语言、模型、人声
-        row1 = ttk.Frame(param_frame)
-        row1.pack(fill=tk.X, pady=2)
+        param_frame = ttk.LabelFrame(main_frame, text="参数配置", padding=(14, 10), style="Card.TLabelframe")
+        param_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(row1, text="语言:").pack(side=tk.LEFT, padx=(0, 5))
-        lang_combo = ttk.Combobox(row1, textvariable=self.selected_language,
+        param_grid = ttk.Frame(param_frame, style="Panel.TFrame")
+        param_grid.pack(fill=tk.X)
+
+        def add_param(label, widget, col, width_weight=0):
+            ttk.Label(param_grid, text=label).grid(row=0, column=col, sticky=tk.W, padx=(0, 6), pady=(0, 6))
+            widget.grid(row=1, column=col, sticky=tk.EW, padx=(0, 16))
+            if width_weight:
+                param_grid.columnconfigure(col, weight=width_weight)
+
+        lang_combo = ttk.Combobox(param_grid, textvariable=self.selected_language,
                                   values=self.languages, state="readonly", width=14)
-        lang_combo.pack(side=tk.LEFT, padx=(0, 15))
         lang_combo.bind("<<ComboboxSelected>>", self.on_language_change)
+        add_param("识别语言", lang_combo, 0)
 
-        ttk.Label(row1, text="识别模型:").pack(side=tk.LEFT, padx=(0, 5))
-        model_combo = ttk.Combobox(row1, textvariable=self.selected_model,
-                                    values=self.models, state="readonly", width=8)
-        model_combo.pack(side=tk.LEFT, padx=(0, 15))
+        model_combo = ttk.Combobox(param_grid, textvariable=self.selected_model,
+                                   values=self.models, state="readonly", width=9)
+        add_param("识别模型", model_combo, 1)
 
-        ttk.Label(row1, text="TTS人声:").pack(side=tk.LEFT, padx=(0, 5))
-        self.voice_combo = ttk.Combobox(row1, textvariable=self.selected_voice,
-                                         state="readonly", width=20)
-        self.voice_combo.pack(side=tk.LEFT, padx=(0, 15))
+        self.voice_combo = ttk.Combobox(param_grid, textvariable=self.selected_voice,
+                                        state="readonly", width=26)
+        add_param("TTS 人声", self.voice_combo, 2, 1)
 
-        ttk.Label(row1, text="翻译目标:").pack(side=tk.LEFT, padx=(0, 5))
-        translate_lang_combo = ttk.Combobox(row1, textvariable=self.selected_translate_lang,
-                                            values=self.translate_langs, state="readonly", width=10)
-        translate_lang_combo.pack(side=tk.LEFT, padx=(0, 15))
+        translate_lang_combo = ttk.Combobox(param_grid, textvariable=self.selected_translate_lang,
+                                            values=self.translate_langs, state="readonly", width=12)
+        add_param("翻译目标", translate_lang_combo, 3)
 
-        ttk.Label(row1, text="翻译模型:").pack(side=tk.LEFT, padx=(0, 5))
-        self.translate_model_combo = ttk.Combobox(row1, textvariable=self.selected_translation_model,
-                                                  values=self.translation_models, state="readonly", width=18)
-        self.translate_model_combo.pack(side=tk.LEFT)
+        self.translate_model_combo = ttk.Combobox(param_grid, textvariable=self.selected_translation_model,
+                                                  values=self.translation_models, state="readonly", width=22)
+        add_param("大模型", self.translate_model_combo, 4, 1)
 
-        # 第二行：速度设置和功能按钮
-        row2 = ttk.Frame(param_frame)
-        row2.pack(fill=tk.X, pady=2)
+        speed_combo = ttk.Combobox(param_grid, textvariable=self.max_speed,
+                                   values=self.speeds, state="readonly", width=8)
+        add_param("最大语速", speed_combo, 5)
 
-        self.speed_align_check = ttk.Checkbutton(row2, text="变速对齐SRT时长",
-                                                  variable=self.speed_align)
-        self.speed_align_check.pack(side=tk.LEFT, padx=(0, 10))
+        option_row = ttk.Frame(param_frame, style="Panel.TFrame")
+        option_row.pack(fill=tk.X, pady=(8, 0))
+        self.speed_align_check = ttk.Checkbutton(option_row, text="变速对齐 SRT 时长", variable=self.speed_align)
+        self.speed_align_check.pack(side=tk.LEFT, padx=(0, 18))
+        self.burn_accel_check = ttk.Checkbutton(option_row, text="烧录加速(硬件编码)", variable=self.burn_acceleration)
+        self.burn_accel_check.pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Button(option_row, text="打开缓存", command=self.open_cache_dir).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(option_row, text="清空缓存", command=self.clear_cache).pack(side=tk.RIGHT)
 
-        ttk.Label(row2, text="最大语速:").pack(side=tk.LEFT, padx=(0, 5))
-        speed_combo = ttk.Combobox(row2, textvariable=self.max_speed,
-                                    values=self.speeds, state="readonly", width=6)
-        speed_combo.pack(side=tk.LEFT, padx=(0, 15))
+        workspace = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        workspace.pack(fill=tk.BOTH, expand=True)
 
-        self.burn_accel_check = ttk.Checkbutton(row2, text="烧录加速(硬件编码)",
-                                                 variable=self.burn_acceleration)
-        self.burn_accel_check.pack(side=tk.LEFT, padx=(0, 15))
+        left_panel = ttk.Frame(workspace, style="App.TFrame")
+        right_panel = ttk.Frame(workspace, style="App.TFrame")
+        workspace.add(left_panel, weight=5)
+        workspace.add(right_panel, weight=4)
 
-        ttk.Button(row2, text="打开缓存", command=self.open_cache_dir, width=10).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(row2, text="清空缓存", command=self.clear_cache, width=10).pack(side=tk.LEFT)
+        func_frame = ttk.LabelFrame(left_panel, text="功能流程", padding=(14, 10), style="Card.TLabelframe")
+        func_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        # 功能区域
-        func_frame = ttk.LabelFrame(main_frame, text="功能", padding=10)
-        func_frame.pack(fill=tk.X, padx=5, pady=5)
+        button_frame = ttk.Frame(func_frame, style="Panel.TFrame")
+        button_frame.pack(fill=tk.BOTH, expand=True)
 
-        func_content = ttk.Frame(func_frame)
-        func_content.pack(fill=tk.X)
-
-        button_frame = ttk.Frame(func_content)
-        button_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        player_frame = ttk.LabelFrame(func_content, text="视频播放器", padding=8)
-        player_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(12, 0))
+        player_frame = ttk.LabelFrame(right_panel, text="视频播放器", padding=(12, 10), style="Card.TLabelframe")
+        player_frame.pack(fill=tk.BOTH, expand=True, padx=(10, 0), pady=(0, 10))
 
         self.player_host = tk.Frame(
             player_frame,
-            bg="#111111",
-            width=320,
-            height=190
+            bg="#0f172a",
+            width=460,
+            height=270,
+            highlightbackground="#1e293b",
+            highlightthickness=1
         )
-        self.player_host.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.player_host.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         self.player_host.pack_propagate(False)
         self.player_host.bind("<Configure>", lambda _event: self._resize_embedded_player())
         self.active_player_host = self.player_host
 
-        ttk.Label(player_frame, textvariable=self.player_video_name, width=32).pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(player_frame, textvariable=self.player_video_name, style="Muted.TLabel").pack(fill=tk.X, pady=(0, 8))
 
         progress_row = ttk.Frame(player_frame)
-        progress_row.pack(fill=tk.X, pady=(0, 6))
+        progress_row.pack(fill=tk.X, pady=(0, 8))
         self.player_scale = ttk.Scale(
             progress_row,
             from_=0,
@@ -210,19 +272,19 @@ class MainWindow:
         self.player_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         self.player_scale.bind("<ButtonPress-1>", self._on_player_seek_start)
         self.player_scale.bind("<ButtonRelease-1>", self._on_player_seek_end)
-        ttk.Label(progress_row, textvariable=self.player_time_var, width=15).pack(side=tk.LEFT)
+        ttk.Label(progress_row, textvariable=self.player_time_var, width=15, style="Muted.TLabel").pack(side=tk.LEFT)
 
         player_buttons = ttk.Frame(player_frame)
         player_buttons.pack(fill=tk.X)
-        ttk.Button(player_buttons, text="选择视频", command=self.choose_player_video, width=9).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(player_buttons, text="暂停", command=self.pause_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(player_buttons, text="继续", command=self.resume_player_video, width=7).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(player_buttons, text="全屏", command=self.play_player_video_fullscreen, width=7).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(player_buttons, text="恢复", command=self.restore_player_window, width=7).pack(side=tk.LEFT)
+        ttk.Button(player_buttons, text="选择视频", command=self.choose_player_video, style="Primary.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(player_buttons, text="暂停", command=self.pause_player_video).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(player_buttons, text="继续", command=self.resume_player_video).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(player_buttons, text="全屏", command=self.play_player_video_fullscreen).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(player_buttons, text="恢复窗口", command=self.restore_player_window).pack(side=tk.LEFT)
 
         player_buttons2 = ttk.Frame(player_frame)
         player_buttons2.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(player_buttons2, text="打开目录", command=self.open_player_video_folder, width=9).pack(side=tk.LEFT)
+        ttk.Button(player_buttons2, text="打开视频目录", command=self.open_player_video_folder).pack(side=tk.LEFT)
 
         ttk.Checkbutton(
             player_frame,
@@ -230,67 +292,74 @@ class MainWindow:
             variable=self.auto_play_burn_result
         ).pack(anchor=tk.W, pady=(6, 0))
 
-        # 使用4列网格布局
-        btn_specs = [
-            ("① 批量 MP4 → MP3", 0, 0),
-            ("② MP3 → 文字(SRT)", 0, 1),
-            ("③ 字幕与逐字稿校对", 0, 2),
-            ("④ 中文字幕翻译", 1, 0),
-            ("⑤ 英文术语校对", 1, 1),
-            ("⑥ SRT → MP3", 1, 2),
-            ("⑦ MP4 去声音", 2, 0),
-            ("⑧ 合并音视频(-new)", 2, 1),
-            ("⑨ 烧录硬字幕(-sub)", 2, 2),
-            ("⑩ 批量逐字稿翻译", 3, 0),
-            ("⑪ 局部修正视频", 3, 1),
+        cmd_map = {
+            "① 批量 MP4 → MP3": self.do_mp4_to_mp3,
+            "② MP3 → 文字(SRT)": self.do_mp3_to_srt,
+            "③ 字幕与逐字稿校对": self.do_proofread,
+            "④ 中文字幕翻译": self.do_translate,
+            "⑤ 英文术语校对": self.do_terminology_proofread,
+            "⑥ SRT → MP3": self.do_srt_to_mp3,
+            "⑦ MP4 去声音": self.do_mute_video,
+            "⑧ 合并音视频(-new)": self.do_merge_av,
+            "⑨ 烧录硬字幕(-sub)": self.do_burn_sub,
+            "⑩ 批量逐字稿翻译": self.do_transcript_translate,
+            "⑪ 局部修正视频": self.do_local_correction,
+        }
+        groups = [
+            ("输入与识别", ["① 批量 MP4 → MP3", "② MP3 → 文字(SRT)"]),
+            ("校对与翻译", ["③ 字幕与逐字稿校对", "④ 中文字幕翻译", "⑤ 英文术语校对", "⑩ 批量逐字稿翻译"]),
+            ("配音与合成", ["⑥ SRT → MP3", "⑦ MP4 去声音", "⑧ 合并音视频(-new)", "⑨ 烧录硬字幕(-sub)"]),
+            ("后期修正", ["⑪ 局部修正视频"]),
         ]
+        for col in range(2):
+            button_frame.columnconfigure(col, weight=1, uniform="workflow")
+        for group_index, (title, buttons) in enumerate(groups):
+            group = ttk.LabelFrame(button_frame, text=title, padding=(10, 8), style="Card.TLabelframe")
+            group.grid(row=group_index // 2, column=group_index % 2, sticky=tk.NSEW, padx=6, pady=6)
+            group.columnconfigure(0, weight=1)
+            for i, text in enumerate(buttons):
+                style_name = "Primary.TButton" if text in {"① 批量 MP4 → MP3", "④ 中文字幕翻译", "⑨ 烧录硬字幕(-sub)"} else "Step.TButton"
+                btn = ttk.Button(group, text=text, command=cmd_map[text], style=style_name)
+                btn.grid(row=i, column=0, sticky=tk.EW, pady=3)
 
-        for text, row, col in btn_specs:
-            cmd_map = {
-                "① 批量 MP4 → MP3": self.do_mp4_to_mp3,
-                "② MP3 → 文字(SRT)": self.do_mp3_to_srt,
-                "③ 字幕与逐字稿校对": self.do_proofread,
-                "④ 中文字幕翻译": self.do_translate,
-                "⑤ 英文术语校对": self.do_terminology_proofread,
-                "⑥ SRT → MP3": self.do_srt_to_mp3,
-                "⑦ MP4 去声音": self.do_mute_video,
-                "⑧ 合并音视频(-new)": self.do_merge_av,
-                "⑨ 烧录硬字幕(-sub)": self.do_burn_sub,
-                "⑩ 批量逐字稿翻译": self.do_transcript_translate,
-                "⑪ 局部修正视频": self.do_local_correction,
-            }
-            btn = ttk.Button(button_frame, text=text, command=cmd_map[text], width=22)
-            btn.grid(row=row, column=col, padx=5, pady=5, sticky=tk.W)
-
-        # 进度条区域
-        progress_frame = ttk.Frame(main_frame)
-        progress_frame.pack(fill=tk.X, padx=5, pady=5)
+        progress_frame = ttk.LabelFrame(right_panel, text="执行状态", padding=(12, 10), style="Card.TLabelframe")
+        progress_frame.pack(fill=tk.X, padx=(10, 0), pady=(0, 10))
 
         self.progress_var = tk.IntVar(value=0)
         self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(fill=tk.X, padx=5, pady=2)
+        self.progress_bar.pack(fill=tk.X, pady=(0, 8))
 
         progress_info_frame = ttk.Frame(progress_frame)
-        progress_info_frame.pack(fill=tk.X, padx=5)
+        progress_info_frame.pack(fill=tk.X)
 
         self.progress_label = ttk.Label(progress_info_frame, text="就绪")
         self.progress_label.pack(side=tk.LEFT)
 
-        self.stop_button = ttk.Button(progress_info_frame, text="⏹ 停止", command=self.stop_task, width=10)
+        self.stop_button = ttk.Button(progress_info_frame, text="停止", command=self.stop_task, style="Danger.TButton")
         self.stop_button.pack(side=tk.LEFT, padx=10)
         self.stop_button.config(state=tk.DISABLED)
 
-        self.cache_size_label = ttk.Label(progress_info_frame, text=f"缓存大小: {get_dir_size(str(config_manager.get_cache_dir()))}")
+        self.cache_size_label = ttk.Label(progress_info_frame, text=f"缓存大小: {get_dir_size(str(config_manager.get_cache_dir()))}", style="Muted.TLabel")
         self.cache_size_label.pack(side=tk.RIGHT)
 
-        # 日志区域
-        log_frame = ttk.LabelFrame(main_frame, text="日志")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding=(10, 8), style="Card.TLabelframe")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
 
         log_inner = ttk.Frame(log_frame)
         log_inner.pack(fill=tk.BOTH, expand=True)
 
-        self.log_text = tk.Text(log_inner, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 9))
+        self.log_text = tk.Text(
+            log_inner,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            font=("Consolas", 9),
+            bg=self.colors["console"],
+            fg=self.colors["console_text"],
+            insertbackground="#ffffff",
+            relief=tk.FLAT,
+            padx=10,
+            pady=8
+        )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.log_scrollbar = ttk.Scrollbar(log_inner, orient=tk.VERTICAL, command=self.log_text.yview)
